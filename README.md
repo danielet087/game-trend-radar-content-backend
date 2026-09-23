@@ -45,12 +45,16 @@ game-trend-radar
 
 此 Repo 的 Actions 需要：
 
-`CONTENT_BACKEND_TOKEN`
+`FRONTEND_REPO_TOKEN`
 
-Token 僅需授權必要 Repo，並對下列 Repo 具有 Contents read/write：
+這顆 token 只負責將補充完成的資料寫入前端 Repo，對：
 
-- `danielet087/game-trend-radar-content-backend`
 - `danielet087/game-trend-radar`
+
+具有 Contents read/write 即可。
+
+主後端 `game-trend-radar-backend` 則使用獨立的
+`CONTENT_BACKEND_TOKEN`，只負責對本 Repo 發送 `repository_dispatch`。
 
 ## 安全原則
 
