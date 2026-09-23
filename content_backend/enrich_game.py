@@ -283,7 +283,7 @@ def build_record(
     return record
 
 
-def upsert_document(path: Path, record: dict, event_release_date: str) -> bool:
+def upsert_document(path: Path, record: dict, event_release_date: str, *, force: bool = False) -> bool:
     doc = json.loads(path.read_text(encoding="utf-8"))
     games = doc.get("games")
     if not isinstance(games, list):
@@ -301,7 +301,7 @@ def upsert_document(path: Path, record: dict, event_release_date: str) -> bool:
             and isinstance(existing.get("tags"), list)
             and int(existing.get("followers", 0)) >= 5000
         )
-        if already:
+        if already and not force:
             return False
         existing.update({
             k: v for k, v in record.items() if v is not None and v != ""
@@ -332,6 +332,7 @@ def main() -> None:
     parser.add_argument("--release-date", required=True)
     parser.add_argument("--follower-checked-at")
     parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     if args.appid <= 0:
         raise SystemExit("appid must be positive")
@@ -354,7 +355,9 @@ def main() -> None:
         event_release_date=args.release_date,
         follower_checked_at=args.follower_checked_at,
     )
-    changed = upsert_document(target, record, args.release_date)
+    changed = upsert_document(
+        target, record, args.release_date, force=args.force
+    )
     print(
         "CONTENT_ENRICHMENT_RESULT",
         json.dumps({
@@ -366,6 +369,7 @@ def main() -> None:
             "header": bool(record["header_image"]),
             "main_capsule": bool(record["main_capsule_image"]),
             "changed": changed,
+            "force": args.force,
         }, ensure_ascii=False),
         flush=True,
     )
