@@ -2,7 +2,7 @@ name: Steam qualified game content enrichment
 
 on:
   repository_dispatch:
-    types: [steam_game_qualified, steam_game_refresh]
+    types: [steam_game_qualified, steam_game_refresh, content_backend_ping]
   workflow_dispatch:
     inputs:
       appid:
@@ -30,7 +30,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ping:
+    if: github.event.action == 'content_backend_ping'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm cross-repository dispatch
+        run: echo "CONTENT_BACKEND_PING_OK source=${{ github.event.client_payload.source_repository }}"
+
   enrich-and-publish:
+    if: github.event.action != 'content_backend_ping'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
