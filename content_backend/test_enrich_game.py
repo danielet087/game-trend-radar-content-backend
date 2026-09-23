@@ -53,6 +53,9 @@ class EnrichmentTests(unittest.TestCase):
             self.assertFalse(
                 upsert_document(path, record, "2026-10-29")
             )
+            self.assertTrue(
+                upsert_document(path, record, "2026-10-29", force=True)
+            )
             doc = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(doc["count"], 1)
             self.assertEqual(doc["games"][0]["appid"], 123)
