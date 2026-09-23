@@ -74,11 +74,11 @@ jobs:
 
       - name: Checkout public frontend with write token
         env:
-          GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.CONTENT_BACKEND_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::error::FRONTEND_REPO_TOKEN is missing"
+            echo "::error::CONTENT_BACKEND_TOKEN is missing"
             exit 1
           fi
           gh auth setup-git
@@ -124,7 +124,7 @@ jobs:
 
       - name: Publish enriched Steam game to frontend
         env:
-          GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.CONTENT_BACKEND_TOKEN }}
         run: |
           set -euo pipefail
           cd frontend
