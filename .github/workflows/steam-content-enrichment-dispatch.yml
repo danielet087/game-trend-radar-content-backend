@@ -129,20 +129,112 @@ jobs:
                 "tags",len(row["tags"]),"genres",len(row["genres"]))
           PY
 
-      - name: Publish enriched Steam game to frontend
+      # The record is fetched from Steam ONCE. Publish retries must only merge
+      # that verified game's record into the newest public JSON, never replay a
+      # stale full-file commit over another concurrently enriched game.
+      - name: Cache validated game record for conflict-safe publishing
+        env:
+          RECORD_PATH: ${{ runner.temp }}/steam-enriched-record.json
+          EVENT_ACTION: ${{ github.event.action }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          appid = int(os.environ["APPID"])
+          doc = json.loads(Path("frontend/data/steam_upcoming.json").read_text(encoding="utf-8"))
+          rows = [row for row in doc["games"] if int(row.get("appid", -1)) == appid]
+          assert len(rows) == 1
+          record = rows[0]
+          assert int(record["followers"]) == int(os.environ["OFFICIAL_FOLLOWERS"])
+          assert record.get("content_enrichment_signature") == (
+              f"{appid}:{record['followers']}:{os.environ['RELEASE_DATE']}"
+          )
+          cache = {
+              "appid": appid,
+              "followers": int(os.environ["OFFICIAL_FOLLOWERS"]),
+              "release_date": os.environ["RELEASE_DATE"],
+              "force": os.environ.get("EVENT_ACTION") == "steam_game_refresh",
+              "record": record,
+          }
+          Path(os.environ["RECORD_PATH"]).write_text(
+              json.dumps(cache, ensure_ascii=False), encoding="utf-8"
+          )
+          print("CONTENT_RECORD_CACHED", appid, flush=True)
+          PY
+
+      - name: Publish enriched Steam game to frontend with conflict-safe retries
         env:
           GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+          RECORD_PATH: ${{ runner.temp }}/steam-enriched-record.json
         run: |
           set -euo pipefail
-          cd frontend
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/steam_upcoming.json
-          if git diff --cached --quiet; then
-            echo "CONTENT_ALREADY_CURRENT AppID=$APPID"
-            exit 0
-          fi
-          git commit -m "data: enrich qualified Steam AppID $APPID [skip ci]"
-          git pull --rebase origin main
-          git push origin HEAD:main
-          echo "CONTENT_PUBLISHED AppID=$APPID Followers=$OFFICIAL_FOLLOWERS"
+          git -C frontend config user.name "github-actions[bot]"
+          git -C frontend config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Each competing job may publish to the same JSON. Do not serialize the
+          # whole workflow: GitHub concurrency only keeps one pending run, which
+          # would silently discard other AppID events. Retry optimistic updates.
+          for attempt in $(seq 1 12); do
+            echo "CONTENT_PUBLISH_ATTEMPT AppID=$APPID attempt=$attempt/12"
+            git -C frontend fetch origin main
+            git -C frontend reset --hard origin/main
+
+            PYTHONPATH=content_backend python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          from enrich_game import upsert_document
+
+          cache = json.loads(Path(os.environ["RECORD_PATH"]).read_text(encoding="utf-8"))
+          appid = int(os.environ["APPID"])
+          assert cache["appid"] == appid
+          assert cache["followers"] == int(os.environ["OFFICIAL_FOLLOWERS"])
+          assert cache["release_date"] == os.environ["RELEASE_DATE"]
+          record = cache["record"]
+          assert int(record["appid"]) == appid
+          assert int(record["followers"]) == cache["followers"]
+          target = Path("frontend/data/steam_upcoming.json")
+          changed = upsert_document(
+              target, record, cache["release_date"], force=cache["force"]
+          )
+          doc = json.loads(target.read_text(encoding="utf-8"))
+          rows = [g for g in doc["games"] if int(g.get("appid", -1)) == appid]
+          assert len(rows) == 1 and doc["count"] == len(doc["games"])
+          row = rows[0]
+          assert row.get("content_enrichment_signature") == (
+              f"{appid}:{cache['followers']}:{cache['release_date']}"
+          )
+          assert row.get("release_precision") == "day"
+          assert row.get("release_display_precision") == "date_full"
+          assert row.get("release_date_timezone") == "Asia/Taipei"
+          assert row.get("sexual_content_screened") is True
+          assert row.get("header_image") or row.get("main_capsule_image")
+          assert isinstance(row.get("language_support"), dict)
+          assert isinstance(row.get("tags"), list)
+          assert isinstance(row.get("genres"), list)
+          assert all(
+              re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(g.get("release_start", "")))
+              for g in doc["games"]
+          )
+          print("CONTENT_LATEST_MERGE_VALID", appid, "changed", changed, flush=True)
+          PY
+
+            git -C frontend add data/steam_upcoming.json
+            if git -C frontend diff --cached --quiet; then
+              echo "CONTENT_ALREADY_CURRENT AppID=$APPID"
+              exit 0
+            fi
+
+            git -C frontend commit -m "data: enrich qualified Steam AppID $APPID [skip ci]"
+            if git -C frontend push origin HEAD:main; then
+              echo "CONTENT_PUBLISHED AppID=$APPID Followers=$OFFICIAL_FOLLOWERS attempt=$attempt"
+              exit 0
+            fi
+
+            echo "::warning::Concurrent public JSON update, retrying AppID=$APPID attempt=$attempt/12"
+            if [ "$attempt" -lt 12 ]; then
+              sleep $((2 + attempt + RANDOM % 5))
+            fi
+          done
+          echo "::error::Could not publish AppID=$APPID after 12 conflict-safe attempts"
+          exit 1
