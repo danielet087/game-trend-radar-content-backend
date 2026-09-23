@@ -85,13 +85,20 @@ jobs:
           gh repo clone danielet087/game-trend-radar frontend -- --depth 1
 
       - name: Enrich one qualified game from Steam and upsert public JSON
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
+          FORCE_ARG=""
+          if [ "$EVENT_ACTION" = "steam_game_refresh" ]; then
+            FORCE_ARG="--force"
+          fi
           python content_backend/enrich_game.py \
             --appid "$APPID" \
             --followers "$OFFICIAL_FOLLOWERS" \
             --release-date "$RELEASE_DATE" \
             --follower-checked-at "$OFFICIAL_CHECKED_AT_TAIPEI" \
-            --data-dir frontend/data
+            --data-dir frontend/data \
+            $FORCE_ARG
 
       - name: Validate public contract before publishing
         run: |
