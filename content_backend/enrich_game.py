@@ -212,6 +212,10 @@ def build_record(
     name_cn = official_chinese_title(cn.get("name"))
 
     release = en.get("release") or {}
+    if release.get("coming_soon_display") != "date_full":
+        raise RuntimeError(
+            f"Steam AppID {appid} does not have a publicly announced exact Store date"
+        )
     stamp = release.get("steam_release_date")
     release_time_utc = None
     release_start = event_release_date
@@ -269,7 +273,8 @@ def build_record(
         "release_precision": "day",
         "release_display_precision": "date_full",
         "release_date_timezone": "Asia/Taipei",
-        "release_date_basis": "steam_store_browse_release_time",
+        "release_date_basis": "steam_store_browse_verified_full_date",
+        "release_date_verified_at": utc_now(),
         "release_time_utc": release_time_utc,
         "release_time_source": STORE_BROWSE,
         "followers": followers,
