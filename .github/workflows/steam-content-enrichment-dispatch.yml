@@ -105,12 +105,10 @@ jobs:
           python - <<'PY'
           import json,os,re
           from pathlib import Path
-          p=Path("frontend/data/steam_upcoming.json")
-          doc=json.loads(p.read_text(encoding="utf-8"))
           aid=int(os.environ["APPID"])
-          rows=[x for x in doc.get("games",[]) if int(x.get("appid",-1))==aid]
-          assert len(rows)==1, len(rows)
-          row=rows[0]
+          p=Path(f"frontend/data/games/{aid}.json")
+          row=json.loads(p.read_text(encoding="utf-8"))
+          assert int(row.get("appid",-1))==aid
           assert int(row["followers"])>=5000
           assert row.get("release_display_precision")=="date_full"
           assert row.get("release_precision")=="day"
@@ -120,11 +118,10 @@ jobs:
           assert isinstance(row.get("language_support"),dict)
           assert isinstance(row.get("tags"),list)
           assert isinstance(row.get("genres"),list)
-          assert doc.get("count")==len(doc.get("games",[]))
-          assert all(
-              re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(x.get("release_start","")))
-              for x in doc.get("games",[])
-          )
+          assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row.get("release_start","")))
+          month=Path(f"frontend/data/calendar/{row['release_start'][:7]}.json")
+          month_doc=json.loads(month.read_text(encoding="utf-8"))
+          assert any(int(x.get("appid",-1))==aid for x in month_doc.get("games",[]))
           print("PUBLIC_CONTENT_VALID",aid,
                 "tags",len(row["tags"]),"genres",len(row["genres"]))
           PY
@@ -142,10 +139,10 @@ jobs:
           from pathlib import Path
 
           appid = int(os.environ["APPID"])
-          doc = json.loads(Path("frontend/data/steam_upcoming.json").read_text(encoding="utf-8"))
-          rows = [row for row in doc["games"] if int(row.get("appid", -1)) == appid]
-          assert len(rows) == 1
-          record = rows[0]
+          record = json.loads(
+              Path(f"frontend/data/games/{appid}.json").read_text(encoding="utf-8")
+          )
+          assert int(record.get("appid", -1)) == appid
           assert int(record["followers"]) == int(os.environ["OFFICIAL_FOLLOWERS"])
           assert record.get("content_enrichment_signature") == (
               f"{appid}:{record['followers']}:{os.environ['RELEASE_DATE']}"
@@ -183,7 +180,7 @@ jobs:
             PYTHONPATH=content_backend python - <<'PY'
           import json, os, re
           from pathlib import Path
-          from enrich_game import upsert_document
+          from enrich_game import upsert_sharded
 
           cache = json.loads(Path(os.environ["RECORD_PATH"]).read_text(encoding="utf-8"))
           appid = int(os.environ["APPID"])
@@ -193,14 +190,14 @@ jobs:
           record = cache["record"]
           assert int(record["appid"]) == appid
           assert int(record["followers"]) == cache["followers"]
-          target = Path("frontend/data/steam_upcoming.json")
-          changed = upsert_document(
-              target, record, cache["release_date"], force=cache["force"]
+          data_dir = Path("frontend/data")
+          changed = upsert_sharded(
+              data_dir, record, cache["release_date"], force=cache["force"]
           )
-          doc = json.loads(target.read_text(encoding="utf-8"))
-          rows = [g for g in doc["games"] if int(g.get("appid", -1)) == appid]
-          assert len(rows) == 1 and doc["count"] == len(doc["games"])
-          row = rows[0]
+          row = json.loads(
+              (data_dir / "games" / f"{appid}.json").read_text(encoding="utf-8")
+          )
+          assert int(row.get("appid", -1)) == appid
           assert row.get("content_enrichment_signature") == (
               f"{appid}:{cache['followers']}:{cache['release_date']}"
           )
@@ -212,20 +209,17 @@ jobs:
           assert isinstance(row.get("language_support"), dict)
           assert isinstance(row.get("tags"), list)
           assert isinstance(row.get("genres"), list)
-          assert all(
-              re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(g.get("release_start", "")))
-              for g in doc["games"]
-          )
+          assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row.get("release_start", "")))
           print("CONTENT_LATEST_MERGE_VALID", appid, "changed", changed, flush=True)
           PY
 
-            git -C frontend add data/steam_upcoming.json
+            git -C frontend add "data/games/$APPID.json" data/calendar data/index.json data/lists
             if git -C frontend diff --cached --quiet; then
               echo "CONTENT_ALREADY_CURRENT AppID=$APPID"
               exit 0
             fi
 
-            git -C frontend commit -m "data: enrich qualified Steam AppID $APPID [skip ci]"
+            git -C frontend commit -m "data: enrich Steam AppID shard $APPID [skip ci]"
             if git -C frontend push origin HEAD:main; then
               echo "CONTENT_PUBLISHED AppID=$APPID Followers=$OFFICIAL_FOLLOWERS attempt=$attempt"
               exit 0
