@@ -71,6 +71,10 @@ class EnrichmentTests(unittest.TestCase):
                 json.dumps({"version": 2, "months": []}),
                 encoding="utf-8",
             )
+            (data / "excluded_appids.json").write_text(
+                json.dumps({"version": 1, "appids": [4005870]}),
+                encoding="utf-8",
+            )
             record = {
                 "appid": 123,
                 "followers": 6000,
@@ -89,6 +93,23 @@ class EnrichmentTests(unittest.TestCase):
             self.assertEqual(game["appid"], 123)
             self.assertEqual(month["games"][0]["appid"], 123)
             self.assertIn("2026-10", index["months"])
+
+
+    def test_sharded_upsert_never_readds_audited_adult_title(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data / "excluded_appids.json").write_text(
+                json.dumps({"version": 1, "appids": [4005870]}),
+                encoding="utf-8",
+            )
+            adult = {
+                "appid": 4005870,
+                "followers": 7268,
+                "release_start": "2026-10-16",
+            }
+            with self.assertRaisesRegex(RuntimeError, "excluded"):
+                upsert_sharded(data, adult, "2026-10-16", force=True)
+            self.assertFalse((data / "games" / "4005870.json").exists())
 
 
 if __name__ == "__main__":
