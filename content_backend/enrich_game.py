@@ -199,6 +199,10 @@ def build_record(
     time.sleep(1.0)
     cn = browse_one(session, appid, "schinese")
     details = appdetails(session, appid)
+    descriptor_data = details.get("content_descriptors") or {}
+    descriptor_ids = descriptor_data.get("ids", []) if isinstance(descriptor_data, dict) else []
+    if {int(x) for x in descriptor_ids} & {3, 4}:
+        raise RuntimeError(f"Steam AppID {appid} has adult-only sexual content descriptors")
     tags = fetch_tags(session, appid)
 
     name_en = str(
@@ -450,6 +454,17 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
     })
 
 
+def excluded_public_appids(data_dir: Path) -> set[int]:
+    """Fail closed: never recreate games excluded by the official Steam adult audit."""
+    path = data_dir / "excluded_appids.json"
+    if not path.is_file():
+        raise RuntimeError(f"Required adult exclusion list missing: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload.get("appids"), list):
+        raise RuntimeError("Malformed adult exclusion list")
+    return {int(appid) for appid in payload["appids"]}
+
+
 def upsert_sharded(
     data_dir: Path,
     record: dict,
@@ -459,6 +474,8 @@ def upsert_sharded(
 ) -> bool:
     """Update one AppID file and only the affected calendar shard."""
     appid = int(record["appid"])
+    if appid in excluded_public_appids(data_dir):
+        raise RuntimeError(f"AppID {appid} excluded by official Steam adult-content audit")
     path = data_dir / "games" / f"{appid}.json"
     existing = {}
     if path.exists():
@@ -518,6 +535,9 @@ def main() -> None:
         raise SystemExit("release-date must be an exact YYYY-MM-DD")
     if not (args.data_dir / "index.json").exists():
         raise SystemExit(f"Missing sharded frontend index: {args.data_dir / 'index.json'}")
+
+    if args.appid in excluded_public_appids(args.data_dir):
+        raise SystemExit(f"AppID {args.appid} excluded by official Steam adult-content audit")
 
     session = requests.Session()
     session.headers["User-Agent"] = "GameTrendRadarContentBackend/1.0"
