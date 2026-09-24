@@ -227,10 +227,9 @@ def build_record(
         or str(details.get("header_image") or "")
     )
     main = steam_asset_url(appid, fmt, assets.get("main_capsule"))
-    capsule = (
-        steam_asset_url(appid, fmt, assets.get("small_capsule"))
-        or main or header
-    )
+    small_capsule = steam_asset_url(appid, fmt, assets.get("small_capsule"))
+    # The 231x87 small capsule must never be the preferred public card image.
+    capsule = main or header or small_capsule
 
     genres = []
     for item in details.get("genres") or []:
@@ -266,6 +265,7 @@ def build_record(
         "capsule_image": capsule,
         "header_image": header,
         "main_capsule_image": main,
+        "small_capsule_image": small_capsule,
         "store_url": STORE_PAGE.format(appid=appid),
         "short_description": str(details.get("short_description") or "").strip(),
         "genres": genres,
