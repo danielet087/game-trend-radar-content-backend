@@ -238,14 +238,25 @@ def build_record(
             if value and value not in genres:
                 genres.append(value)
 
+    name_tw_traditional = OPENCC.convert(name_tw) if name_tw else None
+    name_cn_traditional = OPENCC.convert(name_cn) if name_cn else None
+    display_name = name_tw_traditional or name_cn_traditional or name_en
+    display_name_source = (
+        "tchinese" if name_tw_traditional
+        else "schinese_converted" if name_cn_traditional
+        else "english"
+    )
+
     record = {
         "appid": appid,
         "name": name_en,
+        "display_name": display_name,
+        "display_name_source": display_name_source,
         "name_en": name_en,
         "name_zh_tw": name_tw,
         "name_zh_cn": name_cn,
-        "name_zh_tw_traditional": OPENCC.convert(name_tw) if name_tw else None,
-        "name_zh_cn_traditional": OPENCC.convert(name_cn) if name_cn else None,
+        "name_zh_tw_traditional": name_tw_traditional,
+        "name_zh_cn_traditional": name_cn_traditional,
         "name_en_traditional": name_en,
         "language_support": read_support(en),
         "release_raw": release_start,
