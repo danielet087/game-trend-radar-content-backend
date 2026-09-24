@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
@@ -397,7 +397,7 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
     now = utc_now()
     today = datetime.now(TAIPEI).date()
     today_s = today.isoformat()
-    released_from = (today - __import__("datetime").timedelta(days=30)).isoformat()
+    released_from = (today - timedelta(days=30)).isoformat()
 
     upcoming = [
         int(row["appid"]) for row in rows
