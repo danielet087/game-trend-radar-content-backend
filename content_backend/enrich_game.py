@@ -325,6 +325,169 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
     return True
 
 
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _update_month_file(data_dir: Path, month: str, appid: int, record: dict | None) -> None:
+    path = data_dir / "calendar" / f"{month}.json"
+    doc = {"version": 2, "month": month, "games": []}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                doc.update(loaded)
+        except (OSError, ValueError, TypeError):
+            pass
+    games = [
+        row for row in (doc.get("games") or [])
+        if isinstance(row, dict) and int(row.get("appid", -1)) != appid
+    ]
+    if record is not None:
+        games.append(record)
+    games.sort(key=lambda g: (
+        str(g.get("release_start") or "9999-12-31"),
+        -int(g.get("followers") or 0),
+        int(g.get("appid", 0)),
+    ))
+    if games:
+        doc.update({
+            "version": 2,
+            "generated_at": utc_now(),
+            "month": month,
+            "count": len(games),
+            "games": games,
+        })
+        _write_json(path, doc)
+    elif path.exists():
+        path.unlink()
+
+
+def _rebuild_small_indexes(data_dir: Path) -> None:
+    rows = []
+    games_dir = data_dir / "games"
+    for path in games_dir.glob("*.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        try:
+            appid = int(row.get("appid"))
+            followers = int(row.get("followers"))
+        except (TypeError, ValueError):
+            continue
+        release = row.get("release_start")
+        if appid <= 0 or followers < 3000 or not valid_date(release):
+            continue
+        rows.append(row)
+
+    rows.sort(key=lambda g: (
+        str(g.get("release_start") or "9999-12-31"),
+        -int(g.get("followers") or 0),
+        int(g.get("appid", 0)),
+    ))
+    months = sorted({str(row["release_start"])[:7] for row in rows})
+    now = utc_now()
+    today = datetime.now(TAIPEI).date()
+    today_s = today.isoformat()
+    released_from = (today - __import__("datetime").timedelta(days=30)).isoformat()
+
+    upcoming = [
+        int(row["appid"]) for row in rows
+        if row["release_start"] >= today_s and int(row["followers"]) >= 5000
+    ]
+    released = [
+        int(row["appid"]) for row in rows
+        if released_from <= row["release_start"] < today_s
+        and (
+            int(row["followers"]) >= 5000
+            or (
+                int(row["followers"]) > 3000
+                and row.get("recent_source") in {"tracked_release", "direct_release"}
+            )
+        )
+    ]
+
+    _write_json(data_dir / "index.json", {
+        "version": 2,
+        "generated_at": now,
+        "source": "Steam AppID-sharded public catalog",
+        "game_count": len(rows),
+        "months": months,
+        "calendar_path": "calendar/{YYYY-MM}.json",
+        "game_path": "games/{appid}.json",
+        "lists": {
+            "upcoming": "lists/upcoming.json",
+            "released": "lists/released.json",
+        },
+        "legacy_fallback": "steam_upcoming.json",
+    })
+    _write_json(data_dir / "lists" / "upcoming.json", {
+        "version": 2, "generated_at": now,
+        "count": len(upcoming), "appids": upcoming,
+    })
+    _write_json(data_dir / "lists" / "released.json", {
+        "version": 2, "generated_at": now,
+        "count": len(released), "appids": released,
+    })
+
+
+def upsert_sharded(
+    data_dir: Path,
+    record: dict,
+    event_release_date: str,
+    *,
+    force: bool = False,
+) -> bool:
+    """Update one AppID file and only the affected calendar shard."""
+    appid = int(record["appid"])
+    path = data_dir / "games" / f"{appid}.json"
+    existing = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (OSError, ValueError, TypeError):
+            existing = {}
+
+    signature = f"{appid}:{record['followers']}:{event_release_date}"
+    already = (
+        existing.get("content_enrichment_signature") == signature
+        and existing.get("header_image")
+        and isinstance(existing.get("language_support"), dict)
+        and isinstance(existing.get("tags"), list)
+        and int(existing.get("followers", 0)) >= 5000
+    )
+    if already and not force:
+        return False
+
+    old_release = existing.get("release_start")
+    merged = dict(existing)
+    merged.update({
+        k: v for k, v in record.items() if v is not None and v != ""
+    })
+    merged["content_enrichment_signature"] = signature
+    merged["storage_version"] = 2
+    _write_json(path, merged)
+
+    new_release = str(merged["release_start"])
+    old_month = old_release[:7] if valid_date(old_release) else None
+    new_month = new_release[:7]
+    if old_month and old_month != new_month:
+        _update_month_file(data_dir, old_month, appid, None)
+    _update_month_file(data_dir, new_month, appid, merged)
+    _rebuild_small_indexes(data_dir)
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--appid", type=int, required=True)
@@ -342,9 +505,8 @@ def main() -> None:
         )
     if not valid_date(args.release_date):
         raise SystemExit("release-date must be an exact YYYY-MM-DD")
-    target = args.data_dir / "steam_upcoming.json"
-    if not target.exists():
-        raise SystemExit(f"Missing frontend file: {target}")
+    if not (args.data_dir / "index.json").exists():
+        raise SystemExit(f"Missing sharded frontend index: {args.data_dir / 'index.json'}")
 
     session = requests.Session()
     session.headers["User-Agent"] = "GameTrendRadarContentBackend/1.0"
@@ -355,8 +517,8 @@ def main() -> None:
         event_release_date=args.release_date,
         follower_checked_at=args.follower_checked_at,
     )
-    changed = upsert_document(
-        target, record, args.release_date, force=args.force
+    changed = upsert_sharded(
+        args.data_dir, record, args.release_date, force=args.force
     )
     print(
         "CONTENT_ENRICHMENT_RESULT",
