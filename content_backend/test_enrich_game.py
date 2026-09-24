@@ -16,7 +16,7 @@ class _DummyOpenCC:
 
 sys.modules.setdefault("opencc", types.SimpleNamespace(OpenCC=_DummyOpenCC))
 
-from enrich_game import upsert_document, valid_date
+from enrich_game import upsert_document, upsert_sharded, valid_date
 
 
 class EnrichmentTests(unittest.TestCase):
@@ -59,6 +59,36 @@ class EnrichmentTests(unittest.TestCase):
             doc = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(doc["count"], 1)
             self.assertEqual(doc["games"][0]["appid"], 123)
+
+
+    def test_sharded_upsert_updates_only_appid_and_month_indexes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data / "games").mkdir()
+            (data / "calendar").mkdir()
+            (data / "lists").mkdir()
+            (data / "index.json").write_text(
+                json.dumps({"version": 2, "months": []}),
+                encoding="utf-8",
+            )
+            record = {
+                "appid": 123,
+                "followers": 6000,
+                "release_start": "2026-10-29",
+                "release_end": "2026-10-29",
+                "release_precision": "day",
+                "header_image": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/123/header.jpg",
+                "language_support": {"tchinese": True, "schinese": True, "english": True},
+                "tags": ["Action"],
+            }
+            self.assertTrue(upsert_sharded(data, record, "2026-10-29"))
+            self.assertFalse(upsert_sharded(data, record, "2026-10-29"))
+            game = json.loads((data / "games" / "123.json").read_text(encoding="utf-8"))
+            month = json.loads((data / "calendar" / "2026-10.json").read_text(encoding="utf-8"))
+            index = json.loads((data / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(game["appid"], 123)
+            self.assertEqual(month["games"][0]["appid"], 123)
+            self.assertIn("2026-10", index["months"])
 
 
 if __name__ == "__main__":
