@@ -4,6 +4,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class _DummyOpenCC:
@@ -16,7 +17,7 @@ class _DummyOpenCC:
 
 sys.modules.setdefault("opencc", types.SimpleNamespace(OpenCC=_DummyOpenCC))
 
-from enrich_game import upsert_document, upsert_sharded, valid_date
+from enrich_game import build_record, upsert_document, upsert_sharded, valid_date
 
 
 class EnrichmentTests(unittest.TestCase):
@@ -24,6 +25,46 @@ class EnrichmentTests(unittest.TestCase):
         self.assertTrue(valid_date("2026-10-29"))
         self.assertFalse(valid_date("2026-Q4"))
         self.assertFalse(valid_date("2026-02-30"))
+
+    def test_build_record_keeps_verified_event_date_when_timestamp_rolls_over(self):
+        release = {
+            "coming_soon_display": "date_full",
+            "steam_release_date": 1792790400,
+        }
+        english = {
+            "appid": 123,
+            "name": "Example",
+            "release": release,
+            "supported_languages": [{"elanguage": 0, "supported": True}],
+            "assets": {
+                "asset_url_format": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/123/${FILENAME}",
+                "header": "header.jpg",
+                "main_capsule": "capsule_616x353.jpg",
+            },
+        }
+        chinese = {
+            **english,
+            "name": "範例",
+        }
+        def fake_browse(_session, _appid, language):
+            return english if language == "english" else chinese
+
+        with patch("enrich_game.browse_one", side_effect=fake_browse), \
+             patch("enrich_game.appdetails", return_value={}), \
+             patch("enrich_game.fetch_tags", return_value=[]), \
+             patch("enrich_game.time.sleep", return_value=None):
+            row = build_record(
+                object(),
+                appid=123,
+                followers=6000,
+                event_release_date="2026-10-23",
+                follower_checked_at=None,
+            )
+        self.assertEqual(row["release_start"], "2026-10-23")
+        self.assertNotEqual(
+            row["release_timestamp_taipei_date"], row["release_start"]
+        )
+        self.assertTrue(row["release_date_conflict"])
 
     def test_upsert_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
