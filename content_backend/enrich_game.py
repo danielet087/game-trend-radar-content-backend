@@ -466,6 +466,11 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
         )
     ]
 
+    prior_index = {}
+    try:
+        prior_index = json.loads((data_dir / "index.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        prior_index = {}
     _write_json(data_dir / "index.json", {
         "version": 2,
         "generated_at": now,
@@ -479,6 +484,7 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
             "released": "lists/released.json",
         },
         "legacy_fallback": "steam_upcoming.json",
+        "release_date_audited": prior_index.get("release_date_audited") is True,
     })
     _write_json(data_dir / "lists" / "upcoming.json", {
         "version": 2, "generated_at": now,
