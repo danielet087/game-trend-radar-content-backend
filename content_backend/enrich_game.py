@@ -149,15 +149,37 @@ def official_chinese_title(value: object) -> str | None:
 
 
 def appdetails(session: requests.Session, appid: int) -> dict:
-    data = request_json(
-        session,
-        APPDETAILS,
-        params={"appids": appid, "cc": "TW", "l": "english"},
+    """Best-effort appdetails enrichment.
+
+    Store Browse is the required source for qualification, language and assets.
+    appdetails is supplemental and can intermittently return success=false even
+    for valid Store apps, so do not fail the whole content pipeline on that.
+    """
+    for attempt in range(3):
+        try:
+            data = request_json(
+                session,
+                APPDETAILS,
+                params={"appids": appid, "cc": "TW", "l": "english"},
+                attempts=2,
+            )
+        except RuntimeError as exc:
+            LOG.warning("Steam appdetails transport failure for %s: %s", appid, exc)
+            data = {}
+        row = data.get(str(appid)) or {}
+        if row.get("success") is True and isinstance(row.get("data"), dict):
+            return row["data"]
+        if attempt < 2:
+            LOG.warning(
+                "Steam appdetails unavailable for %s, retry %d/3",
+                appid, attempt + 1,
+            )
+            time.sleep(5 * (attempt + 1))
+    LOG.warning(
+        "Steam appdetails unavailable for %s after retries; using Store Browse fallback",
+        appid,
     )
-    row = data.get(str(appid)) or {}
-    if row.get("success") is not True or not isinstance(row.get("data"), dict):
-        raise RuntimeError(f"Steam appdetails unavailable for {appid}")
-    return row["data"]
+    return {}
 
 
 def fetch_tags(session: requests.Session, appid: int) -> list[str]:
@@ -219,12 +241,17 @@ def build_record(
     stamp = release.get("steam_release_date")
     release_time_utc = None
     release_start = event_release_date
+    release_timestamp_taipei_date = None
     if type(stamp) in (int, float) or (
         isinstance(stamp, str) and stamp.isdigit()
     ):
         instant = datetime.fromtimestamp(int(stamp), tz=timezone.utc)
         release_time_utc = instant.isoformat().replace("+00:00", "Z")
-        release_start = instant.astimezone(TAIPEI).date().isoformat()
+        release_timestamp_taipei_date = instant.astimezone(TAIPEI).date().isoformat()
+    release_date_conflict = (
+        release_timestamp_taipei_date is not None
+        and release_timestamp_taipei_date != event_release_date
+    )
 
     assets = en.get("assets") or {}
     if not isinstance(assets, dict):
@@ -277,6 +304,8 @@ def build_record(
         "release_date_verified_at": utc_now(),
         "release_time_utc": release_time_utc,
         "release_time_source": STORE_BROWSE,
+        "release_timestamp_taipei_date": release_timestamp_taipei_date,
+        "release_date_conflict": release_date_conflict,
         "followers": followers,
         "follower_checked_at": follower_checked_at or utc_now(),
         "follower_source": "Steam Community XML memberCount",
@@ -292,7 +321,9 @@ def build_record(
         "tags": tags,
         "content_enriched_at": utc_now(),
         "content_enrichment_source": (
-            "Steam Store Browse + appdetails + public Store tags"
+            "Steam Store Browse + "
+            + ("appdetails + " if details else "appdetails fallback + ")
+            + "public Store tags"
         ),
         "content_enrichment_version": 1,
     }
