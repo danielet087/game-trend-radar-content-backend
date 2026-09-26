@@ -136,6 +136,55 @@ class EnrichmentTests(unittest.TestCase):
             self.assertIn("2026-10", index["months"])
 
 
+    def test_sharded_upsert_repairs_orphaned_game_and_legacy(self):
+        # A concurrent publish retry can reset tracked indexes while leaving
+        # a new, untracked games/<appid>.json in the checkout.
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data / "games").mkdir()
+            (data / "calendar").mkdir()
+            (data / "lists").mkdir()
+            (data / "index.json").write_text(
+                json.dumps({"version": 2, "months": [], "game_count": 0}),
+                encoding="utf-8",
+            )
+            (data / "steam_upcoming.json").write_text(
+                json.dumps({"version": 2, "count": 0, "games": []}),
+                encoding="utf-8",
+            )
+            (data / "excluded_appids.json").write_text(
+                json.dumps({"version": 1, "appids": []}), encoding="utf-8",
+            )
+            record = {
+                "appid": 2548880,
+                "followers": 5463,
+                "release_start": "2026-10-27",
+                "release_end": "2026-10-27",
+                "release_precision": "day",
+                "release_display_precision": "date_full",
+                "release_date_timezone": "Asia/Taipei",
+                "header_image": "https://example.com/steam/header.jpg",
+                "language_support": {"english": True},
+                "tags": ["Horror"],
+                "genres": ["Action"],
+                "sexual_content_screened": True,
+                "content_enrichment_signature": "2548880:5463:2026-10-27",
+            }
+            (data / "games" / "2548880.json").write_text(
+                json.dumps(record), encoding="utf-8",
+            )
+            self.assertTrue(upsert_sharded(data, record, "2026-10-27"))
+            month = json.loads((data / "calendar" / "2026-10.json").read_text(encoding="utf-8"))
+            index = json.loads((data / "index.json").read_text(encoding="utf-8"))
+            legacy = json.loads((data / "steam_upcoming.json").read_text(encoding="utf-8"))
+            upcoming = json.loads((data / "lists" / "upcoming.json").read_text(encoding="utf-8"))
+            self.assertEqual(month["count"], 1)
+            self.assertEqual(index["game_count"], legacy["count"])
+            self.assertEqual(index["game_count"], 1)
+            self.assertIn(2548880, upcoming["appids"])
+            self.assertFalse(upsert_sharded(data, record, "2026-10-27"))
+
+
     def test_sharded_upsert_never_readds_audited_adult_title(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp)
