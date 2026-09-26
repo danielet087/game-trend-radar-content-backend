@@ -1,0 +1,72 @@
+name: Reconcile verified Steam catalog
+on:
+  schedule:
+    - cron: "30 7,19 * * *"
+      timezone: "Asia/Taipei"
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/steam-catalog-reconcile.yml"
+permissions:
+  contents: read
+concurrency:
+  group: steam-catalog-reconcile
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            content_backend/
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install and test
+        run: |
+          python -m pip install --disable-pip-version-check -r content_backend/requirements.txt
+          PYTHONPATH=content_backend python -m unittest -q content_backend/test_enrich_game.py
+          python -m py_compile content_backend/reconcile_catalog.py
+
+      - name: Checkout authoritative backend and frontend
+        env:
+          GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo "::error::Missing FRONTEND_REPO_TOKEN"; exit 1; }
+          gh auth setup-git
+          gh repo clone danielet087/game-trend-radar-backend backend -- --depth 1
+          gh repo clone danielet087/game-trend-radar frontend -- --depth 1
+          git -C frontend config user.name "github-actions[bot]"
+          git -C frontend config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Repair and publish all locally repairable missing indexes
+        env:
+          GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 8); do
+            git -C frontend fetch origin main
+            git -C frontend reset --hard origin/main
+            git -C frontend clean -fd -- data/games data/calendar data/lists
+            PYTHONPATH=content_backend python -u content_backend/reconcile_catalog.py \
+              --master backend/data/steam_upcoming_master.json \
+              --data-dir frontend/data --max-enrich 12
+            git -C frontend add data/games data/calendar data/index.json data/lists data/steam_upcoming.json
+            if git -C frontend diff --cached --quiet; then
+              echo "STEAM_RECONCILE_ALREADY_CURRENT"
+              exit 0
+            fi
+            git -C frontend commit -m "data: reconcile qualified Steam catalog [skip ci]"
+            if git -C frontend push origin HEAD:main; then
+              echo "STEAM_RECONCILE_PUBLISHED"
+              exit 0
+            fi
+            echo "::warning::Concurrent frontend publication; retrying against latest main ($attempt/8)"
+            sleep $((attempt * 3))
+          done
+          echo "::error::Reconciliation could not publish after eight conflict-safe attempts"
+          exit 1
