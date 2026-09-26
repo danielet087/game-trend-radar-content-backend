@@ -176,6 +176,9 @@ jobs:
             echo "CONTENT_PUBLISH_ATTEMPT AppID=$APPID attempt=$attempt/12"
             git -C frontend fetch origin main
             git -C frontend reset --hard origin/main
+            # Git reset keeps untracked AppID files. Remove generated leftovers
+            # so the cached verified record rebuilds every dependent index.
+            git -C frontend clean -fd -- data/games data/calendar data/lists
 
             PYTHONPATH=content_backend python - <<'PY'
           import json, os, re
@@ -210,10 +213,22 @@ jobs:
           assert isinstance(row.get("tags"), list)
           assert isinstance(row.get("genres"), list)
           assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(row.get("release_start", "")))
+          month = json.loads((data_dir / "calendar" / f"{row['release_start'][:7]}.json").read_text(encoding="utf-8"))
+          index = json.loads((data_dir / "index.json").read_text(encoding="utf-8"))
+          legacy = json.loads((data_dir / "steam_upcoming.json").read_text(encoding="utf-8"))
+          upcoming = json.loads((data_dir / "lists" / "upcoming.json").read_text(encoding="utf-8"))
+          assert any(int(x["appid"]) == appid for x in month["games"]), "AppID missing from month"
+          assert any(int(x["appid"]) == appid for x in legacy["games"]), "AppID missing from legacy"
+          assert row["release_start"][:7] in index["months"], "month missing from index"
+          assert index["game_count"] == legacy["count"] == len(legacy["games"]), "catalog count mismatch"
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          if row["release_start"] >= datetime.now(ZoneInfo("Asia/Taipei")).date().isoformat():
+              assert appid in upcoming["appids"], "AppID missing from upcoming"
           print("CONTENT_LATEST_MERGE_VALID", appid, "changed", changed, flush=True)
           PY
 
-            git -C frontend add "data/games/$APPID.json" data/calendar data/index.json data/lists
+            git -C frontend add "data/games/$APPID.json" data/calendar data/index.json data/lists data/steam_upcoming.json
             if git -C frontend diff --cached --quiet; then
               echo "CONTENT_ALREADY_CURRENT AppID=$APPID"
               exit 0
