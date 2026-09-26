@@ -494,6 +494,47 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
         "version": 2, "generated_at": now,
         "count": len(released), "appids": released,
     })
+    # Legacy readers must see exactly the same catalog as the sharded index.
+    # Preserve released titles; do not derive this file from only upcoming AppIDs.
+    _write_json(data_dir / "steam_upcoming.json", {
+        "version": 2, "generated_at": now,
+        "count": len(rows), "games": rows,
+    })
+
+
+def _shard_in_sync(data_dir: Path, record: dict) -> bool:
+    """Existing AppID is not published until its month, indexes and fallback agree."""
+    appid = int(record["appid"])
+    release = str(record["release_start"])
+    try:
+        month = json.loads((data_dir / "calendar" / f"{release[:7]}.json").read_text(encoding="utf-8"))
+        index = json.loads((data_dir / "index.json").read_text(encoding="utf-8"))
+        legacy = json.loads((data_dir / "steam_upcoming.json").read_text(encoding="utf-8"))
+        upcoming = json.loads((data_dir / "lists" / "upcoming.json").read_text(encoding="utf-8"))
+        released = json.loads((data_dir / "lists" / "released.json").read_text(encoding="utf-8"))
+        row = next(x for x in month["games"] if int(x["appid"]) == appid)
+        fallback = next(x for x in legacy["games"] if int(x["appid"]) == appid)
+        today = datetime.now(TAIPEI).date()
+        day = datetime.fromisoformat(release).date()
+        expected_upcoming = day >= today and int(record["followers"]) >= 5000
+        expected_released = (
+            today - timedelta(days=30) <= day < today
+            and (int(record["followers"]) >= 5000 or (
+                int(record["followers"]) > 3000
+                and record.get("recent_source") in {"tracked_release", "direct_release"}
+            ))
+        )
+        return (
+            row.get("content_enrichment_signature") == record.get("content_enrichment_signature")
+            and fallback.get("content_enrichment_signature") == record.get("content_enrichment_signature")
+            and release[:7] in index["months"]
+            and int(index["game_count"]) == int(legacy["count"]) == len(legacy["games"])
+            and int(month["count"]) == len(month["games"])
+            and (appid in upcoming["appids"]) == expected_upcoming
+            and (appid in released["appids"]) == expected_released
+        )
+    except (OSError, ValueError, TypeError, KeyError, StopIteration):
+        return False
 
 
 def excluded_public_appids(data_dir: Path) -> set[int]:
@@ -537,7 +578,14 @@ def upsert_sharded(
         and int(existing.get("followers", 0)) >= 5000
     )
     if already and not force:
-        return False
+        if _shard_in_sync(data_dir, existing):
+            return False
+        # A previous push may have published only the AppID file, or an
+        # optimistic retry may have reset tracked indexes but kept an
+        # untracked AppID. Repair indexes without another Steam request.
+        _update_month_file(data_dir, str(existing["release_start"])[:7], appid, existing)
+        _rebuild_small_indexes(data_dir)
+        return True
 
     old_release = existing.get("release_start")
     merged = dict(existing)
