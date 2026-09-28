@@ -37,6 +37,8 @@ def metadata_gaps(record: dict | None, source: dict) -> list[str]:
         gaps.append('tags')
     elif not record['tags'] and record.get('tags_fetch_status') != 'ok':
         gaps.append('tags_unchecked')
+    if not record.get('description_checked_at'):
+        gaps.append('description_unchecked')
     return gaps
 
 
@@ -90,7 +92,7 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
             cached_path = cache_dir / f'{appid}.json' if cache_dir else None
             cached = read_json(cached_path) if cached_path else None
             try:
-                if cached and cached.get('signature') == signature:
+                if cached and cached.get('signature') == signature and cached.get('record', {}).get('description_checked_at'):
                     enriched = cached['record']
                 else:
                     enriched = build_record(session, appid=appid, followers=int(source['followers']),
@@ -131,7 +133,11 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
             pending[str(appid)] = gaps
         if record and not _shard_in_sync(data_dir, record):
             raise RuntimeError(f'Public catalog inconsistent for AppID {appid}')
-    result = {'generated_at': utc_now(), 'qualified_master': len(qualified), **counts,
+    translation_pending = [appid for appid in qualified
+        if (read_json(data_dir / 'games' / f'{appid}.json', {}) or {}).get('short_description_language') != 'zh-TW']
+    result = {'description_translation_pending': translation_pending,
+              'description_translation_pending_count': len(translation_pending),
+              'generated_at': utc_now(), 'qualified_master': len(qualified), **counts,
               'pending_count': len(pending), 'pending_enrichment': pending,
               'failures': {key: value for key, value in failures.items() if key in pending},
               'complete': not pending,

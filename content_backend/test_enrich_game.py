@@ -15,7 +15,10 @@ class _DummyOpenCC:
         return value
 
 
-sys.modules.setdefault("opencc", types.SimpleNamespace(OpenCC=_DummyOpenCC))
+try:
+    import opencc
+except ImportError:
+    sys.modules.setdefault("opencc", types.SimpleNamespace(OpenCC=_DummyOpenCC))
 
 from enrich_game import build_record, upsert_document, upsert_sharded, valid_date
 
@@ -207,7 +210,7 @@ class CompletenessTests(unittest.TestCase):
     def test_existing_header_does_not_hide_missing_tags_or_languages(self):
         from reconcile_catalog import metadata_gaps
         source = {'appid': 123, 'followers': 5000, 'release_start': '2026-10-20'}
-        row = {**source, 'header_image': 'known', 'artwork_checked_at': 'checked'}
+        row = {**source, 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked'}
         self.assertEqual(metadata_gaps(row, source), ['languages', 'tags'])
         row.update(language_support={'english': True}, tags=[], tags_fetch_status='ok')
         self.assertEqual(metadata_gaps(row, source), [])
@@ -277,7 +280,7 @@ class CompletenessTests(unittest.TestCase):
                      'release_display_precision': 'date_full'} for aid in (123, 456)]
             master = root/'master.json'
             master.write_text(json.dumps({'games': rows}))
-            enriched = {**rows[1], 'header_image': 'known', 'artwork_checked_at': 'checked',
+            enriched = {**rows[1], 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked',
                         'language_support': {'english': True}, 'tags': ['Action'], 'tags_fetch_status': 'ok'}
             with patch('reconcile_catalog.build_record', side_effect=[RuntimeError('temporarily unavailable'), enriched]):
                 status = reconcile(master, data, 60)
@@ -330,7 +333,7 @@ class CompletenessTests(unittest.TestCase):
             old = {'appid': 123, 'followers': 7000, 'release_start': '2030-01-01',
                    'release_display_precision': 'date_full', 'release_date_verified_at': '2026-09-27T00:00:00Z'}
             current = {**old, 'release_start': '2030-01-02', 'release_date_verified_at': '2026-09-28T00:00:00Z',
-                       'header_image': 'known', 'artwork_checked_at': 'checked',
+                       'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked',
                        'language_support': {'english': True}, 'tags': ['Action'], 'tags_fetch_status': 'ok'}
             upsert_sharded(data, current, current['release_start'])
             upsert_sharded(data, {**old, 'main_capsule_image_2x': 'new artwork'}, old['release_start'], force=True)

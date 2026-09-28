@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import requests
 from opencc import OpenCC
 from public_catalog import keep_newer_release, write_catalog_projection
+from localized_descriptions import description_fields, merge_description_fields
 
 LOG = logging.getLogger(__name__)
 
@@ -339,7 +340,13 @@ def build_record(
         "artwork_checked_at": utc_now(),
         "small_capsule_image": small_capsule,
         "store_url": STORE_PAGE.format(appid=appid),
-        "short_description": str(details.get("short_description") or (en.get("basic_info") or {}).get("short_description") or "").strip(),
+        **description_fields(
+            appid,
+            (en.get("basic_info") or {}).get("short_description") or details.get("short_description"),
+            (tw.get("basic_info") or {}).get("short_description"),
+            (cn.get("basic_info") or {}).get("short_description"),
+        ),
+        "description_checked_at": utc_now(),
         "genres": genres,
         "tags": tags or [],
         "tags_fetch_status": "ok" if tags is not None and (tags or not en.get("tagids")) else "retry",
@@ -350,7 +357,7 @@ def build_record(
             + ("appdetails + " if details else "appdetails fallback + ")
             + "public Store tags"
         ),
-        "content_enrichment_version": 2,
+        "content_enrichment_version": 3,
     }
     if historical_release:
         # This permission is only for metadata on an already published title.
@@ -386,9 +393,7 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
         )
         if already and not force:
             return False
-        existing.update({
-            k: v for k, v in record.items() if v is not None and v != ""
-        })
+        existing.update(merge_description_fields(existing, record))
         existing["content_enrichment_signature"] = signature
     else:
         row = dict(record)
@@ -631,10 +636,7 @@ def upsert_sharded(
         _rebuild_small_indexes(data_dir)
         return True
 
-    merged = dict(existing)
-    merged.update({
-        k: v for k, v in record.items() if v is not None and v != ""
-    })
+    merged = merge_description_fields(existing, record)
     if record.get("tags_fetch_status") == "retry" and existing.get("tags"):
         merged["tags"] = existing["tags"]
     merged["content_enrichment_signature"] = signature

@@ -25,7 +25,7 @@ jobs:
       - name: Install and test
         run: |
           python -m pip install --disable-pip-version-check -r content_backend/requirements.txt
-          PYTHONPATH=content_backend python -m unittest -q content_backend/test_enrich_game.py
+          PYTHONPATH=content_backend python -m unittest discover -s content_backend -p "test_*.py" -q
           python -m py_compile content_backend/reconcile_catalog.py
 
       - name: Checkout authoritative backend and frontend
@@ -79,7 +79,7 @@ jobs:
           if p.exists():
               r = json.loads(p.read_text())
               with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
-                  out.write(f"\n## Steam 內容對帳\n- 公開遊戲：{r['public_count']}\n- 本輪嘗試：{r['attempted']}\n- 補充成功：{r['enriched']}\n- 仍待補齊：{r['pending_count']}\n- 全部完成：{r['complete']}\n")
+                  out.write(f"\n## Steam 內容對帳\n- 公開遊戲：{r['public_count']}\n- 本輪嘗試：{r['attempted']}\n- 補充成功：{r['enriched']}\n- 仍待補齊：{r['pending_count']}\n- 全部完成：{r['complete']}\n- 待補繁中翻譯：{r.get('description_translation_pending_count', 0)}\n")
                   for aid, gaps in r['pending_enrichment'].items():
                       out.write(f"- AppID {aid}: {', '.join(gaps)}\n")
           PYREPORT
