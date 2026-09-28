@@ -145,12 +145,13 @@ jobs:
           assert int(record.get("appid", -1)) == appid
           assert int(record["followers"]) == int(os.environ["OFFICIAL_FOLLOWERS"])
           assert record.get("content_enrichment_signature") == (
-              f"{appid}:{record['followers']}:{os.environ['RELEASE_DATE']}"
+              f"{appid}:{record['followers']}:{record['release_start']}"
           )
           cache = {
               "appid": appid,
               "followers": int(os.environ["OFFICIAL_FOLLOWERS"]),
-              "release_date": os.environ["RELEASE_DATE"],
+              "release_date": record["release_start"],
+              "event_release_date": os.environ["RELEASE_DATE"],
               "force": os.environ.get("EVENT_ACTION") == "steam_game_refresh",
               "record": record,
           }
@@ -189,7 +190,7 @@ jobs:
           appid = int(os.environ["APPID"])
           assert cache["appid"] == appid
           assert cache["followers"] == int(os.environ["OFFICIAL_FOLLOWERS"])
-          assert cache["release_date"] == os.environ["RELEASE_DATE"]
+          assert cache["event_release_date"] == os.environ["RELEASE_DATE"]
           record = cache["record"]
           assert int(record["appid"]) == appid
           assert int(record["followers"]) == cache["followers"]
@@ -202,7 +203,7 @@ jobs:
           )
           assert int(row.get("appid", -1)) == appid
           assert row.get("content_enrichment_signature") == (
-              f"{appid}:{cache['followers']}:{cache['release_date']}"
+              f"{appid}:{cache['followers']}:{row['release_start']}"
           )
           assert row.get("release_precision") == "day"
           assert row.get("release_display_precision") == "date_full"

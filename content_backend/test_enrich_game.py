@@ -65,6 +65,7 @@ class EnrichmentTests(unittest.TestCase):
             row["release_timestamp_taipei_date"], row["release_start"]
         )
         self.assertTrue(row["release_date_conflict"])
+        self.assertIsNone(row["release_date_verified_at"])
 
     def test_upsert_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -318,6 +319,29 @@ class CompletenessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Stale official event'):
                 upsert_sharded(data, {**row, 'followers': 6000, 'follower_checked_at': '2026-09-27T00:00:00Z'}, row['release_start'])
             self.assertEqual(json.loads((data/'games/123.json').read_text())['followers'], 7000)
+
+    def test_newer_date_audit_survives_old_master_and_cached_content(self):
+        from public_catalog import keep_newer_release
+        from reconcile_catalog import reconcile
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)/'data'
+            data.mkdir()
+            (data/'excluded_appids.json').write_text('{"appids": []}')
+            old = {'appid': 123, 'followers': 7000, 'release_start': '2030-01-01',
+                   'release_display_precision': 'date_full', 'release_date_verified_at': '2026-09-27T00:00:00Z'}
+            current = {**old, 'release_start': '2030-01-02', 'release_date_verified_at': '2026-09-28T00:00:00Z',
+                       'header_image': 'known', 'artwork_checked_at': 'checked',
+                       'language_support': {'english': True}, 'tags': ['Action'], 'tags_fetch_status': 'ok'}
+            upsert_sharded(data, current, current['release_start'])
+            upsert_sharded(data, {**old, 'main_capsule_image_2x': 'new artwork'}, old['release_start'], force=True)
+            result = json.loads((data/'games/123.json').read_text())
+            self.assertEqual(result['release_start'], current['release_start'])
+            self.assertEqual(result['main_capsule_image_2x'], 'new artwork')
+            self.assertEqual(keep_newer_release(current, old)['release_start'], current['release_start'])
+            master = Path(tmp)/'master.json'
+            master.write_text(json.dumps({'games': [old]}))
+            with patch('reconcile_catalog.build_record', side_effect=AssertionError('already complete')):
+                self.assertTrue(reconcile(master, data, 60)['complete'])
 
 
 if __name__ == "__main__":

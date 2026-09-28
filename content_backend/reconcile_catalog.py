@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+from public_catalog import keep_newer_release
 from enrich_game import (
     SteamRateLimit, TAIPEI, _shard_in_sync, _rebuild_small_indexes, _write_json, build_record,
     excluded_public_appids, upsert_sharded, utc_now, valid_date,
@@ -64,7 +65,8 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
         historical = valid_date(day) and day < today and (data_dir / 'games' / f'{appid}.json').exists()
         if appid > 0 and followers >= 5000 and valid_date(day) and appid not in blocked and (
             source.get('release_display_precision') == 'date_full' or historical):
-            qualified[appid] = source
+            current = read_json(data_dir / 'games' / f'{appid}.json', {})
+            qualified[appid] = keep_newer_release(current, source)
     status_path = data_dir / 'content_refresh_status.json'
     previous = read_json(status_path, {})
     failures = dict(previous.get('failures') or {})

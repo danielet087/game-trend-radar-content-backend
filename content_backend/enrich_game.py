@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from opencc import OpenCC
-from public_catalog import write_catalog_projection
+from public_catalog import keep_newer_release, write_catalog_projection
 
 LOG = logging.getLogger(__name__)
 
@@ -321,7 +321,7 @@ def build_record(
         "release_display_precision": "date_full",
         "release_date_timezone": "Asia/Taipei",
         "release_date_basis": "steam_store_browse_verified_full_date",
-        "release_date_verified_at": utc_now(),
+        "release_date_verified_at": None if release_date_conflict else utc_now(),
         "release_time_utc": release_time_utc,
         "release_time_source": STORE_BROWSE,
         "release_timestamp_taipei_date": release_timestamp_taipei_date,
@@ -374,7 +374,8 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
     existing = next(
         (g for g in games if int(g.get("appid", -1)) == appid), None
     )
-    signature = f"{appid}:{record['followers']}:{event_release_date}"
+    record = keep_newer_release(existing or {}, record)
+    signature = f"{appid}:{record['followers']}:{record['release_start']}"
     if existing:
         already = (
             existing.get("content_enrichment_signature") == signature
@@ -602,6 +603,7 @@ def upsert_sharded(
         except (OSError, ValueError, TypeError):
             existing = {}
 
+    record = keep_newer_release(existing, record)
     # An older queued event must not roll back a more recent official result.
     try:
         old_at = datetime.fromisoformat(str(existing.get("follower_checked_at")).replace("Z", "+00:00"))
@@ -611,7 +613,7 @@ def upsert_sharded(
     except (ValueError, TypeError):
         pass
 
-    signature = f"{appid}:{record['followers']}:{event_release_date}"
+    signature = f"{appid}:{record['followers']}:{record['release_start']}"
     already = (
         existing.get("content_enrichment_signature") == signature
         and existing.get("header_image")
