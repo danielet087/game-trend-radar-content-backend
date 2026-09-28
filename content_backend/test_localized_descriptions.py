@@ -63,7 +63,8 @@ class DescriptionTests(unittest.TestCase):
 
     def test_collection_check_does_not_retry_forever_for_unavailable_chinese(self):
         base = {"appid": 123, "followers": 6000, "release_start": "2030-01-01", "header_image": "known",
-                "artwork_checked_at": "checked", "tags": ["Action"], "language_support": {"english": True}}
+                "artwork_checked_at": "checked", "tags": ["Action"], "language_support": {"english": True},
+                "tag_labels_language": "zh-TW", "genre_labels_language": "zh-TW"}
         self.assertEqual(metadata_gaps(base, base), ["description_unchecked"])
         base.update(description_checked_at="checked", short_description_source="unavailable")
         self.assertEqual(metadata_gaps(base, base), [])

@@ -54,7 +54,7 @@ class EnrichmentTests(unittest.TestCase):
 
         with patch("enrich_game.browse_one", side_effect=fake_browse), \
              patch("enrich_game.appdetails", return_value={}), \
-             patch("enrich_game.fetch_tags", return_value=[]), \
+             patch("enrich_game.fetch_store_taxonomy", return_value={"tags": [], "tag_ids": {}, "tag_labels_zh_tw": {}, "genres": [], "genre_labels_zh_tw": {}}), \
              patch("enrich_game.time.sleep", return_value=None):
             row = build_record(
                 object(),
@@ -210,7 +210,7 @@ class CompletenessTests(unittest.TestCase):
     def test_existing_header_does_not_hide_missing_tags_or_languages(self):
         from reconcile_catalog import metadata_gaps
         source = {'appid': 123, 'followers': 5000, 'release_start': '2026-10-20'}
-        row = {**source, 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked'}
+        row = {**source, 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked', 'tag_labels_language':'zh-TW', 'genre_labels_language':'zh-TW'}
         self.assertEqual(metadata_gaps(row, source), ['languages', 'tags'])
         row.update(language_support={'english': True}, tags=[], tags_fetch_status='ok')
         self.assertEqual(metadata_gaps(row, source), [])
@@ -259,7 +259,7 @@ class CompletenessTests(unittest.TestCase):
                    'supported_languages': [{'elanguage': 0, 'supported': True}]}
         with patch('enrich_game.browse_one', return_value=english), \
              patch('enrich_game.appdetails', return_value={}), \
-             patch('enrich_game.fetch_tags', return_value=['Action']), \
+             patch('enrich_game.fetch_store_taxonomy', return_value={'tags':['Action'], 'tag_ids':{'Action':19}, 'tag_labels_zh_tw':{'Action':'動作'}, 'genres':['Action'], 'genre_labels_zh_tw':{'Action':'動作'}}), \
              patch('enrich_game.time.sleep'):
             args = dict(appid=123, followers=6000, event_release_date='2000-01-01', follower_checked_at=None)
             with self.assertRaisesRegex(RuntimeError, 'exact Store date'):
@@ -280,7 +280,7 @@ class CompletenessTests(unittest.TestCase):
                      'release_display_precision': 'date_full'} for aid in (123, 456)]
             master = root/'master.json'
             master.write_text(json.dumps({'games': rows}))
-            enriched = {**rows[1], 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked',
+            enriched = {**rows[1], 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked', 'tag_labels_language':'zh-TW', 'genre_labels_language':'zh-TW',
                         'language_support': {'english': True}, 'tags': ['Action'], 'tags_fetch_status': 'ok'}
             with patch('reconcile_catalog.build_record', side_effect=[RuntimeError('temporarily unavailable'), enriched]):
                 status = reconcile(master, data, 60)
@@ -333,7 +333,7 @@ class CompletenessTests(unittest.TestCase):
             old = {'appid': 123, 'followers': 7000, 'release_start': '2030-01-01',
                    'release_display_precision': 'date_full', 'release_date_verified_at': '2026-09-27T00:00:00Z'}
             current = {**old, 'release_start': '2030-01-02', 'release_date_verified_at': '2026-09-28T00:00:00Z',
-                       'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked',
+                       'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked', 'tag_labels_language':'zh-TW', 'genre_labels_language':'zh-TW',
                        'language_support': {'english': True}, 'tags': ['Action'], 'tags_fetch_status': 'ok'}
             upsert_sharded(data, current, current['release_start'])
             upsert_sharded(data, {**old, 'main_capsule_image_2x': 'new artwork'}, old['release_start'], force=True)

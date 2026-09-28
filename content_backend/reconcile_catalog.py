@@ -37,6 +37,10 @@ def metadata_gaps(record: dict | None, source: dict) -> list[str]:
         gaps.append('tags')
     elif not record['tags'] and record.get('tags_fetch_status') != 'ok':
         gaps.append('tags_unchecked')
+    if record.get('tag_labels_language') != 'zh-TW':
+        gaps.append('tags_zh_tw')
+    if record.get('genre_labels_language') != 'zh-TW' or record.get('genres_fetch_status') == 'retry':
+        gaps.append('genres_zh_tw')
     if not record.get('description_checked_at'):
         gaps.append('description_unchecked')
     return gaps
@@ -92,7 +96,7 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
             cached_path = cache_dir / f'{appid}.json' if cache_dir else None
             cached = read_json(cached_path) if cached_path else None
             try:
-                if cached and cached.get('signature') == signature and cached.get('record', {}).get('description_checked_at'):
+                if cached and cached.get('signature') == signature and cached.get('record', {}).get('content_enrichment_version', 0) >= 4:
                     enriched = cached['record']
                 else:
                     enriched = build_record(session, appid=appid, followers=int(source['followers']),

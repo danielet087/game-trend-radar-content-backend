@@ -17,6 +17,20 @@ TAG 抓取失敗時保留先前有效 TAG，紀錄 `tags_fetch_status=retry`。�
 
 直接保存 Store Browse 回傳的 `header`、`main_capsule` 與對應 `_2x` 網址，完整保留各資產的 hash，不自行換檔名猜圖。語言支援、繁中／簡中名稱分別保存；簡中顯示名稱另轉繁體，不篡改原始名稱。
 
+## 台灣商店的 TAG 與遊戲類型
+
+內容補充使用 `cc=TW`、`l=tchinese`。TAG 與遊戲類型直接取自同一款遊戲的台灣繁中商店頁；補充用的 appdetails 也採繁中。頁面資料取不到時，使用同為台灣區繁中的 Store Browse、官方標籤字典與 appdetails 補足，來源欄位會如實區分頁面與 API。名稱與介紹延續繁中優先、簡中轉繁的既有流程。
+
+`tags` 和 `genres` 保留原有英文識別，另存 Steam 官方的 `tag_labels_zh_tw` 與 `genre_labels_zh_tw`。TAG 以 Steam tag ID 對應（`tag_ids`），每個工作階段只查一次官方英文標籤字典，不依不同語言的列表位置硬配。新增但尚無英文名稱的 TAG 使用穩定的 `steam-tag:<id>` 識別。前端官方繁中名稱優先，舊英文 TAG 網址與跨遊戲篩選仍相容。
+
+來源網址、語言、查詢時間及 TAG／類型的成功狀態分別保存。網頁改版、地區不可用或暫時抓取失敗時保留既有標籤與對照資料，交由對帳重試；429 會停止當輪。未取得的類型不會被當成成功的空白清單。
+
+已收錄遊戲可單獨補 TAG／類型，無須重查 Followers、發售日期、介紹或圖片：
+
+```sh
+python content_backend/localize_taxonomy.py --data-dir /path/to/frontend/data --cache-dir /path/to/new-run-cache
+```
+
 ## 繁體中文介紹
 
 Store Browse 繁中介紹優先，其次是官方簡中經 OpenCC `s2twp` 轉換。僅英文的現有 7 款，使用 `descriptions_zh_tw.json` 中對照原文 SHA-256 的本站翻譯；Steam 原文變更就不沿用舊翻譯。官方中文一旦提供，會優先取代本站翻譯。

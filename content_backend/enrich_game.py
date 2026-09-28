@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import logging
 import re
@@ -15,6 +14,7 @@ import requests
 from opencc import OpenCC
 from public_catalog import keep_newer_release, write_catalog_projection
 from localized_descriptions import description_fields, merge_description_fields
+from steam_taxonomy import TAG_LIST, parse_store_taxonomy, preserve_taxonomy
 
 LOG = logging.getLogger(__name__)
 
@@ -29,11 +29,6 @@ ASSET_BASE = "https://shared.akamai.steamstatic.com/store_item_assets/"
 TAIPEI = ZoneInfo("Asia/Taipei")
 OPENCC = OpenCC("s2t")
 HAN = re.compile(r"[\u3400-\u9fff]")
-APP_TAG_RE = re.compile(
-    r'<a[^>]*class=["\'][^"\']*\bapp_tag\b[^"\']*["\'][^>]*>(.*?)</a>',
-    re.IGNORECASE | re.DOTALL,
-)
-TAG_STRIP_RE = re.compile(r"<[^>]+>")
 ALLOWED_ASSET_HOSTS = ("steamstatic.com", "steamcdn-a.akamaihd.net")
 LANG_IDS = {"english": 0, "schinese": 6, "tchinese": 7}
 OTHER_LANGUAGE_NAMES = {
@@ -107,6 +102,7 @@ def browse_one(session: requests.Session, appid: int, language: str) -> dict:
             "include_release": True,
             "include_assets": True,
             "include_supported_languages": True,
+            "include_tag_count": 20,
         },
     }
     data = request_json(
@@ -154,7 +150,7 @@ def official_chinese_title(value: object) -> str | None:
     return value if value and len(value) <= 240 and HAN.search(value) else None
 
 
-def appdetails(session: requests.Session, appid: int) -> dict:
+def appdetails(session: requests.Session, appid: int, language: str = "tchinese") -> dict:
     """Best-effort appdetails enrichment.
 
     Store Browse is the required source for qualification, language and assets.
@@ -166,7 +162,7 @@ def appdetails(session: requests.Session, appid: int) -> dict:
             data = request_json(
                 session,
                 APPDETAILS,
-                params={"appids": appid, "cc": "TW", "l": "english"},
+                params={"appids": appid, "cc": "TW", "l": language},
                 attempts=2,
             )
         except SteamRateLimit:
@@ -190,29 +186,96 @@ def appdetails(session: requests.Session, appid: int) -> dict:
     return {}
 
 
-def fetch_tags(session: requests.Session, appid: int) -> list[str] | None:
+def fetch_taxonomy_from_api(session: requests.Session, appid: int, names: dict) -> dict | None:
+    """Public Store metadata fallback, still Taiwan/Traditional Chinese."""
+    localized = getattr(session, "_radar_tag_names_tw", None)
+    if localized is None:
+        data = request_json(session, TAG_LIST, params={"language": "tchinese"}, attempts=2)
+        localized = {row["tagid"]: row["name"] for row in data.get("response", {}).get("tags", [])
+                     if isinstance(row, dict) and type(row.get("tagid")) is int and isinstance(row.get("name"), str)}
+        if not localized:
+            return None
+        session._radar_tag_names_tw = localized
+    row = browse_one(session, appid, "tchinese")
+    if row.get("success") != 1 or row.get("visible") is False or not isinstance(row.get("tagids"), list):
+        return None
+    ids = list(dict.fromkeys(x for x in row["tagids"] if type(x) is int and x > 0))[:20]
+    if any(tag_id not in localized for tag_id in ids):
+        return None
+    tags = [names.get(tag_id) or f"steam-tag:{tag_id}" for tag_id in ids]
+    result = {"tags": tags, "tag_ids": dict(zip(tags, ids)),
+              "tag_labels_zh_tw": {name:localized[tag_id] for name,tag_id in zip(tags,ids)},
+              "tags_source": STORE_BROWSE,
+              "tag_labels_source": TAG_LIST + "?language=tchinese",
+              "genres": None, "genre_labels_zh_tw": {}}
+    details = appdetails(session, appid)
+    genres = details.get("genres")
+    if isinstance(genres, list):
+        genre_names = getattr(session, "_radar_genre_names", {})
+        if any(str(g.get("id")) not in genre_names for g in genres if isinstance(g, dict)):
+            english = appdetails(session, appid, "english")
+            genre_names.update({str(g["id"]):g["description"] for g in english.get("genres", [])
+                                if isinstance(g, dict) and "id" in g and isinstance(g.get("description"), str)})
+            session._radar_genre_names = genre_names
+        result["genres"] = []
+        for item in genres:
+            if not isinstance(item, dict) or "id" not in item or not isinstance(item.get("description"), str):
+                continue
+            name = genre_names.get(str(item["id"])) or f"steam-genre:{item['id']}"
+            result["genres"].append(name)
+            result["genre_labels_zh_tw"][name] = item["description"]
+        result["genres_source"] = APPDETAILS + f"?appids={appid}&cc=TW&l=tchinese"
+    return result
+
+
+def fetch_store_taxonomy(session: requests.Session, appid: int) -> dict | None:
     try:
+        names = getattr(session, "_radar_tag_names", None)
+        if names is None:
+            data = request_json(session, TAG_LIST, params={"language": "english"}, attempts=2)
+            names = {row["tagid"]: row["name"] for row in data.get("response", {}).get("tags", [])
+                     if isinstance(row, dict) and type(row.get("tagid")) is int and isinstance(row.get("name"), str)}
+            if not names:
+                return None
+            session._radar_tag_names = names
         response = session.get(
             STORE_PAGE.format(appid=appid),
-            params={"cc": "TW", "l": "english"},
+            params={"cc": "TW", "l": "tchinese"},
             timeout=35,
-            cookies={"birthtime": "0", "lastagecheckage": "1-January-1990"},
         )
         if response.status_code == 429:
             raise SteamRateLimit("Steam tags rate limited this batch; defer remaining records")
         response.raise_for_status()
-    except requests.RequestException:
+        payload = parse_store_taxonomy(response.text, appid, names)
+        if payload is not None and isinstance(payload.get("genres"), list):
+            return payload
+        return fetch_taxonomy_from_api(session, appid, names) or payload
+    except SteamRateLimit:
+        raise
+    except (requests.RequestException, RuntimeError):
         return None
-    values: list[str] = []
-    for raw in APP_TAG_RE.findall(response.text):
-        value = html.unescape(TAG_STRIP_RE.sub("", raw))
-        value = re.sub(r"\s+", " ", value).strip()
-        if not value or value == "+" or value in values:
-            continue
-        values.append(value)
-        if len(values) >= 20:
-            break
-    return values
+
+
+def taxonomy_fields(payload: dict | None, appid: int) -> dict:
+    source = STORE_PAGE.format(appid=appid) + "?cc=TW&l=tchinese"
+    tags_ok = payload is not None
+    genres_ok = tags_ok and isinstance(payload.get("genres"), list)
+    return {
+        "tags": payload["tags"] if tags_ok else [],
+        "tag_ids": payload["tag_ids"] if tags_ok else {},
+        "tag_labels_zh_tw": payload["tag_labels_zh_tw"] if tags_ok else {},
+        "tag_labels_language": "zh-TW" if tags_ok else None,
+        "tags_fetch_status": "ok" if tags_ok else "retry",
+        "tags_source": payload.get("tags_source", source) if tags_ok else None,
+        "tag_labels_source": payload.get("tag_labels_source", source) if tags_ok else None,
+        "tags_checked_at": utc_now() if tags_ok else None,
+        "genres": payload["genres"] if genres_ok else [],
+        "genre_labels_zh_tw": payload["genre_labels_zh_tw"] if genres_ok else {},
+        "genre_labels_language": "zh-TW" if genres_ok else None,
+        "genres_fetch_status": "ok" if genres_ok else "retry",
+        "genres_source": payload.get("genres_source", source) if genres_ok else None,
+        "genres_checked_at": utc_now() if genres_ok else None,
+    }
 
 
 def build_record(
@@ -235,7 +298,9 @@ def build_record(
     descriptor_ids = list(descriptor_ids) + list(en.get("content_descriptorids") or [])
     if {int(x) for x in descriptor_ids} & {3, 4}:
         raise RuntimeError(f"Steam AppID {appid} has adult-only sexual content descriptors")
-    tags = fetch_tags(session, appid)
+    taxonomy = taxonomy_fields(fetch_store_taxonomy(session, appid), appid)
+    if not taxonomy["tags"] and en.get("tagids"):
+        taxonomy["tags_fetch_status"] = "retry"
 
     name_en = str(
         en.get("name") or details.get("name") or f"Steam App {appid}"
@@ -287,13 +352,6 @@ def build_record(
     # The 231x87 small capsule must never be the preferred public card image.
     capsule = main or header or small_capsule
 
-    genres = []
-    for item in details.get("genres") or []:
-        if isinstance(item, dict) and isinstance(item.get("description"), str):
-            value = item["description"].strip()
-            if value and value not in genres:
-                genres.append(value)
-
     name_tw_traditional = OPENCC.convert(name_tw) if name_tw else None
     name_cn_traditional = OPENCC.convert(name_cn) if name_cn else None
     display_name = name_tw_traditional or name_cn_traditional or name_en
@@ -342,22 +400,19 @@ def build_record(
         "store_url": STORE_PAGE.format(appid=appid),
         **description_fields(
             appid,
-            (en.get("basic_info") or {}).get("short_description") or details.get("short_description"),
-            (tw.get("basic_info") or {}).get("short_description"),
+            (en.get("basic_info") or {}).get("short_description"),
+            (tw.get("basic_info") or {}).get("short_description") or details.get("short_description"),
             (cn.get("basic_info") or {}).get("short_description"),
         ),
         "description_checked_at": utc_now(),
-        "genres": genres,
-        "tags": tags or [],
-        "tags_fetch_status": "ok" if tags is not None and (tags or not en.get("tagids")) else "retry",
-        "tags_checked_at": utc_now(),
+        **taxonomy,
         "content_enriched_at": utc_now(),
         "content_enrichment_source": (
             "Steam Store Browse + "
             + ("appdetails + " if details else "appdetails fallback + ")
-            + "public Store tags"
+            + "Taiwan Traditional Chinese Store tags and genres"
         ),
-        "content_enrichment_version": 3,
+        "content_enrichment_version": 4,
     }
     if historical_release:
         # This permission is only for metadata on an already published title.
@@ -393,7 +448,7 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
         )
         if already and not force:
             return False
-        existing.update(merge_description_fields(existing, record))
+        existing.update(preserve_taxonomy(existing, merge_description_fields(existing, record)))
         existing["content_enrichment_signature"] = signature
     else:
         row = dict(record)
@@ -636,9 +691,7 @@ def upsert_sharded(
         _rebuild_small_indexes(data_dir)
         return True
 
-    merged = merge_description_fields(existing, record)
-    if record.get("tags_fetch_status") == "retry" and existing.get("tags"):
-        merged["tags"] = existing["tags"]
+    merged = preserve_taxonomy(existing, merge_description_fields(existing, record))
     merged["content_enrichment_signature"] = signature
     merged["storage_version"] = 2
     _write_json(path, merged)
