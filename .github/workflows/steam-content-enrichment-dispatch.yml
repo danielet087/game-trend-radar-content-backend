@@ -228,7 +228,7 @@ jobs:
           print("CONTENT_LATEST_MERGE_VALID", appid, "changed", changed, flush=True)
           PY
 
-            git -C frontend add "data/games/$APPID.json" data/calendar data/index.json data/lists data/steam_upcoming.json
+            git -C frontend add "data/games/$APPID.json" data/calendar data/index.json data/lists data/steam_upcoming.json data/catalog.json
             if git -C frontend diff --cached --quiet; then
               echo "CONTENT_ALREADY_CURRENT AppID=$APPID"
               exit 0

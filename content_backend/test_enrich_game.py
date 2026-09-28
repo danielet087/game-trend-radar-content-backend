@@ -202,5 +202,123 @@ class EnrichmentTests(unittest.TestCase):
             self.assertFalse((data / "games" / "4005870.json").exists())
 
 
+class CompletenessTests(unittest.TestCase):
+    def test_existing_header_does_not_hide_missing_tags_or_languages(self):
+        from reconcile_catalog import metadata_gaps
+        source = {'appid': 123, 'followers': 5000, 'release_start': '2026-10-20'}
+        row = {**source, 'header_image': 'known', 'artwork_checked_at': 'checked'}
+        self.assertEqual(metadata_gaps(row, source), ['languages', 'tags'])
+        row.update(language_support={'english': True}, tags=[], tags_fetch_status='ok')
+        self.assertEqual(metadata_gaps(row, source), [])
+        row['tags_fetch_status'] = 'retry'
+        self.assertEqual(metadata_gaps(row, source), ['tags'])
+
+    def test_failed_tag_fetch_preserves_previous_tags_and_repairs_same_count_drift(self):
+        from enrich_game import _shard_in_sync
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data/'excluded_appids.json').write_text('{"appids": []}')
+            row = {'appid':123, 'followers':5000, 'release_start':'2026-10-20',
+                   'header_image':'known', 'language_support':{'english':True},
+                   'tags':['Action'], 'tags_fetch_status':'ok'}
+            upsert_sharded(data, row, row['release_start'], force=True)
+            upsert_sharded(data, {**row, 'tags':[], 'tags_fetch_status':'retry'}, row['release_start'], force=True)
+            current = json.loads((data/'games/123.json').read_text())
+            self.assertEqual(current['tags'], ['Action'])
+            self.assertEqual(current['tags_fetch_status'], 'retry')
+            legacy = json.loads((data/'steam_upcoming.json').read_text())
+            legacy['games'][0]['followers'] = 9999
+            (data/'steam_upcoming.json').write_text(json.dumps(legacy))
+            self.assertFalse(_shard_in_sync(data, current))
+            upsert_sharded(data, current, row['release_start'])
+            self.assertTrue(_shard_in_sync(data, current))
+
+    def test_projection_revision_changes_on_metadata_and_keeps_same_count(self):
+        from public_catalog import write_catalog_projection
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            one = write_catalog_projection(data, [{'appid':123, 'tags':['Action']}], 'first')
+            two = write_catalog_projection(data, [{'appid':123, 'tags':['Strategy']}], 'second')
+            self.assertNotEqual(one['catalog_revision'], two['catalog_revision'])
+            self.assertEqual(json.loads((data/'catalog.json').read_text())['count'], 1)
+
+    def test_two_x_artwork_keeps_source_provided_hashes(self):
+        from enrich_game import steam_asset_url
+        fmt = 'steam/apps/123/${FILENAME}?t=7'
+        self.assertEqual(steam_asset_url(123, fmt, 'hash/header_2x.jpg'),
+          'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/123/hash/header_2x.jpg?t=7')
+        self.assertEqual(steam_asset_url(123, fmt, None), '')
+
+    def test_released_metadata_requires_existing_public_record_permission(self):
+        english = {'name': 'Released game', 'release': {'steam_release_date': 946684800},
+                   'assets': {'asset_url_format': 'steam/apps/123/${FILENAME}', 'header': 'header.jpg'},
+                   'supported_languages': [{'elanguage': 0, 'supported': True}]}
+        with patch('enrich_game.browse_one', return_value=english), \
+             patch('enrich_game.appdetails', return_value={}), \
+             patch('enrich_game.fetch_tags', return_value=['Action']), \
+             patch('enrich_game.time.sleep'):
+            args = dict(appid=123, followers=6000, event_release_date='2000-01-01', follower_checked_at=None)
+            with self.assertRaisesRegex(RuntimeError, 'exact Store date'):
+                build_record(object(), **args)
+            row = build_record(object(), **args, allow_historical=True)
+            self.assertEqual(row['tags'], ['Action'])
+            self.assertNotIn('release_date_verified_at', row)
+            self.assertIsNone(row['follower_checked_at'])
+
+    def test_reconcile_keeps_progress_and_reports_failed_record(self):
+        from reconcile_catalog import reconcile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root/'data'
+            data.mkdir()
+            (data/'excluded_appids.json').write_text('{"appids": []}')
+            rows = [{'appid': aid, 'followers': 6000, 'release_start': '2030-01-01',
+                     'release_display_precision': 'date_full'} for aid in (123, 456)]
+            master = root/'master.json'
+            master.write_text(json.dumps({'games': rows}))
+            enriched = {**rows[1], 'header_image': 'known', 'artwork_checked_at': 'checked',
+                        'language_support': {'english': True}, 'tags': ['Action'], 'tags_fetch_status': 'ok'}
+            with patch('reconcile_catalog.build_record', side_effect=[RuntimeError('temporarily unavailable'), enriched]):
+                status = reconcile(master, data, 60)
+            self.assertEqual(status['enriched'], 1)
+            self.assertEqual(status['pending_count'], 1)
+            self.assertIn('123', status['failures'])
+            self.assertEqual(json.loads((data/'catalog.json').read_text())['count'], 1)
+
+    def test_rate_limit_stops_fetches_but_still_repairs_local_indexes(self):
+        from reconcile_catalog import reconcile
+        from enrich_game import SteamRateLimit, _shard_in_sync
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root/'data'
+            data.mkdir()
+            (data/'excluded_appids.json').write_text('{"appids": []}')
+            rows = [{'appid': aid, 'followers': 6000, 'release_start': '2030-01-01',
+                     'release_display_precision': 'date_full'} for aid in (123, 456)]
+            for row in rows:
+                upsert_sharded(data, row, row['release_start'])
+            (data/'calendar/2030-01.json').unlink()
+            master = root/'master.json'
+            master.write_text(json.dumps({'games': rows}))
+            with patch('reconcile_catalog.build_record', side_effect=SteamRateLimit('429')) as fetch:
+                status = reconcile(master, data, 60)
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(status['pending_count'], 2)
+            for row in rows:
+                current = json.loads((data/'games'/f"{row['appid']}.json").read_text())
+                self.assertTrue(_shard_in_sync(data, current))
+
+    def test_stale_event_cannot_roll_back_newer_followers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data/'excluded_appids.json').write_text('{"appids": []}')
+            row = {'appid': 123, 'followers': 7000, 'release_start': '2030-01-01',
+                   'follower_checked_at': '2026-09-28T00:00:00Z'}
+            upsert_sharded(data, row, row['release_start'])
+            with self.assertRaisesRegex(RuntimeError, 'Stale official event'):
+                upsert_sharded(data, {**row, 'followers': 6000, 'follower_checked_at': '2026-09-27T00:00:00Z'}, row['release_start'])
+            self.assertEqual(json.loads((data/'games/123.json').read_text())['followers'], 7000)
+
+
 if __name__ == "__main__":
     unittest.main()

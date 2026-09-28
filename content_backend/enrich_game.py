@@ -13,8 +13,14 @@ from zoneinfo import ZoneInfo
 
 import requests
 from opencc import OpenCC
+from public_catalog import write_catalog_projection
 
 LOG = logging.getLogger(__name__)
+
+
+class SteamRateLimit(RuntimeError):
+    pass
+
 STORE_BROWSE = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
 APPDETAILS = "https://store.steampowered.com/api/appdetails"
 STORE_PAGE = "https://store.steampowered.com/app/{appid}/"
@@ -76,8 +82,7 @@ def request_json(
         try:
             response = session.get(url, params=params, timeout=35)
             if response.status_code == 429:
-                time.sleep(12 * (attempt + 1))
-                continue
+                raise SteamRateLimit("Steam rate limited this batch; defer remaining records")
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict):
@@ -163,6 +168,8 @@ def appdetails(session: requests.Session, appid: int) -> dict:
                 params={"appids": appid, "cc": "TW", "l": "english"},
                 attempts=2,
             )
+        except SteamRateLimit:
+            raise
         except RuntimeError as exc:
             LOG.warning("Steam appdetails transport failure for %s: %s", appid, exc)
             data = {}
@@ -182,7 +189,7 @@ def appdetails(session: requests.Session, appid: int) -> dict:
     return {}
 
 
-def fetch_tags(session: requests.Session, appid: int) -> list[str]:
+def fetch_tags(session: requests.Session, appid: int) -> list[str] | None:
     try:
         response = session.get(
             STORE_PAGE.format(appid=appid),
@@ -191,10 +198,10 @@ def fetch_tags(session: requests.Session, appid: int) -> list[str]:
             cookies={"birthtime": "0", "lastagecheckage": "1-January-1990"},
         )
         if response.status_code == 429:
-            return []
+            raise SteamRateLimit("Steam tags rate limited this batch; defer remaining records")
         response.raise_for_status()
     except requests.RequestException:
-        return []
+        return None
     values: list[str] = []
     for raw in APP_TAG_RE.findall(response.text):
         value = html.unescape(TAG_STRIP_RE.sub("", raw))
@@ -214,6 +221,7 @@ def build_record(
     followers: int,
     event_release_date: str,
     follower_checked_at: str | None,
+    allow_historical: bool = False,
 ) -> dict:
     en = browse_one(session, appid, "english")
     time.sleep(1.0)
@@ -223,6 +231,7 @@ def build_record(
     details = appdetails(session, appid)
     descriptor_data = details.get("content_descriptors") or {}
     descriptor_ids = descriptor_data.get("ids", []) if isinstance(descriptor_data, dict) else []
+    descriptor_ids = list(descriptor_ids) + list(en.get("content_descriptorids") or [])
     if {int(x) for x in descriptor_ids} & {3, 4}:
         raise RuntimeError(f"Steam AppID {appid} has adult-only sexual content descriptors")
     tags = fetch_tags(session, appid)
@@ -234,11 +243,20 @@ def build_record(
     name_cn = official_chinese_title(cn.get("name"))
 
     release = en.get("release") or {}
-    if release.get("coming_soon_display") != "date_full":
+    stamp = release.get("steam_release_date")
+    historical_release = (
+        allow_historical
+        and valid_date(event_release_date)
+        and event_release_date < datetime.now(TAIPEI).date().isoformat()
+        and str(stamp).isdigit()
+        and 0 < int(stamp) <= datetime.now(timezone.utc).timestamp()
+        and not release.get("is_coming_soon", en.get("is_coming_soon", False))
+        and not release.get("coming_soon_display")
+    )
+    if release.get("coming_soon_display") != "date_full" and not historical_release:
         raise RuntimeError(
             f"Steam AppID {appid} does not have a publicly announced exact Store date"
         )
-    stamp = release.get("steam_release_date")
     release_time_utc = None
     release_start = event_release_date
     release_timestamp_taipei_date = None
@@ -262,6 +280,8 @@ def build_record(
         or str(details.get("header_image") or "")
     )
     main = steam_asset_url(appid, fmt, assets.get("main_capsule"))
+    header_2x = steam_asset_url(appid, fmt, assets.get("header_2x"))
+    main_2x = steam_asset_url(appid, fmt, assets.get("main_capsule_2x"))
     small_capsule = steam_asset_url(appid, fmt, assets.get("small_capsule"))
     # The 231x87 small capsule must never be the preferred public card image.
     capsule = main or header or small_capsule
@@ -307,26 +327,37 @@ def build_record(
         "release_timestamp_taipei_date": release_timestamp_taipei_date,
         "release_date_conflict": release_date_conflict,
         "followers": followers,
-        "follower_checked_at": follower_checked_at or utc_now(),
+        "follower_checked_at": follower_checked_at,
         "follower_source": "Steam Community XML memberCount",
         "official_ge5000": True,
         "sexual_content_screened": True,
         "capsule_image": capsule,
         "header_image": header,
         "main_capsule_image": main,
+        "header_image_2x": header_2x,
+        "main_capsule_image_2x": main_2x,
+        "artwork_checked_at": utc_now(),
         "small_capsule_image": small_capsule,
         "store_url": STORE_PAGE.format(appid=appid),
-        "short_description": str(details.get("short_description") or "").strip(),
+        "short_description": str(details.get("short_description") or (en.get("basic_info") or {}).get("short_description") or "").strip(),
         "genres": genres,
-        "tags": tags,
+        "tags": tags or [],
+        "tags_fetch_status": "ok" if tags is not None and (tags or not en.get("tagids")) else "retry",
+        "tags_checked_at": utc_now(),
         "content_enriched_at": utc_now(),
         "content_enrichment_source": (
             "Steam Store Browse + "
             + ("appdetails + " if details else "appdetails fallback + ")
             + "public Store tags"
         ),
-        "content_enrichment_version": 1,
+        "content_enrichment_version": 2,
     }
+    if historical_release:
+        # This permission is only for metadata on an already published title.
+        # Keep its existing date evidence; do not pretend to re-verify a
+        # coming-soon Store display that no longer exists after release.
+        for key in ("release_display_precision", "release_date_basis", "release_date_verified_at"):
+            record.pop(key, None)
     if not record["header_image"] and not record["main_capsule_image"]:
         raise RuntimeError(f"Steam did not return usable artwork for {appid}")
     if not isinstance(record["language_support"], dict):
@@ -471,6 +502,7 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
         prior_index = json.loads((data_dir / "index.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         prior_index = {}
+    projection = write_catalog_projection(data_dir, rows, now)
     _write_json(data_dir / "index.json", {
         "version": 2,
         "generated_at": now,
@@ -485,6 +517,7 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
         },
         "legacy_fallback": "steam_upcoming.json",
         "release_date_audited": prior_index.get("release_date_audited") is True,
+        **projection,
     })
     _write_json(data_dir / "lists" / "upcoming.json", {
         "version": 2, "generated_at": now,
@@ -525,8 +558,8 @@ def _shard_in_sync(data_dir: Path, record: dict) -> bool:
             ))
         )
         return (
-            row.get("content_enrichment_signature") == record.get("content_enrichment_signature")
-            and fallback.get("content_enrichment_signature") == record.get("content_enrichment_signature")
+            row == record
+            and fallback == record
             and release[:7] in index["months"]
             and int(index["game_count"]) == int(legacy["count"]) == len(legacy["games"])
             and int(month["count"]) == len(month["games"])
@@ -569,6 +602,15 @@ def upsert_sharded(
         except (OSError, ValueError, TypeError):
             existing = {}
 
+    # An older queued event must not roll back a more recent official result.
+    try:
+        old_at = datetime.fromisoformat(str(existing.get("follower_checked_at")).replace("Z", "+00:00"))
+        new_at = datetime.fromisoformat(str(record.get("follower_checked_at")).replace("Z", "+00:00"))
+        if new_at < old_at and any(record.get(key) != existing.get(key) for key in ("followers", "release_start")):
+            raise RuntimeError(f"Stale official event for AppID {appid}; preserving newer public data")
+    except (ValueError, TypeError):
+        pass
+
     signature = f"{appid}:{record['followers']}:{event_release_date}"
     already = (
         existing.get("content_enrichment_signature") == signature
@@ -587,20 +629,26 @@ def upsert_sharded(
         _rebuild_small_indexes(data_dir)
         return True
 
-    old_release = existing.get("release_start")
     merged = dict(existing)
     merged.update({
         k: v for k, v in record.items() if v is not None and v != ""
     })
+    if record.get("tags_fetch_status") == "retry" and existing.get("tags"):
+        merged["tags"] = existing["tags"]
     merged["content_enrichment_signature"] = signature
     merged["storage_version"] = 2
     _write_json(path, merged)
 
     new_release = str(merged["release_start"])
-    old_month = old_release[:7] if valid_date(old_release) else None
     new_month = new_release[:7]
-    if old_month and old_month != new_month:
-        _update_month_file(data_dir, old_month, appid, None)
+    # A prior partial publication can leave the AppID in an older month even
+    # after its individual record moved. Remove every stale occurrence.
+    for month_path in (data_dir / "calendar").glob("????-??.json"):
+        if month_path.stem == new_month:
+            continue
+        month_doc = json.loads(month_path.read_text(encoding="utf-8"))
+        if any(int(row.get("appid", -1)) == appid for row in month_doc.get("games", [])):
+            _update_month_file(data_dir, month_path.stem, appid, None)
     _update_month_file(data_dir, new_month, appid, merged)
     _rebuild_small_indexes(data_dir)
     return True

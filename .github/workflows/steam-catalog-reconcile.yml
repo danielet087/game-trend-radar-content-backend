@@ -4,9 +4,6 @@ on:
     - cron: "30 7,19 * * *"
       timezone: "Asia/Taipei"
   workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/steam-catalog-reconcile.yml"
 permissions:
   contents: read
 concurrency:
@@ -54,8 +51,9 @@ jobs:
             git -C frontend clean -fd -- data/games data/calendar data/lists
             PYTHONPATH=content_backend python -u content_backend/reconcile_catalog.py \
               --master backend/data/steam_upcoming_master.json \
-              --data-dir frontend/data --max-enrich 12
-            git -C frontend add data/games data/calendar data/index.json data/lists data/steam_upcoming.json
+              --data-dir frontend/data --max-enrich 60 --max-seconds 2400 \
+              --cache-dir "$RUNNER_TEMP/steam-content-cache"
+            git -C frontend add data/games data/calendar data/index.json data/lists data/steam_upcoming.json data/catalog.json data/content_refresh_status.json
             if git -C frontend diff --cached --quiet; then
               echo "STEAM_RECONCILE_ALREADY_CURRENT"
               exit 0
@@ -70,3 +68,18 @@ jobs:
           done
           echo "::error::Reconciliation could not publish after eight conflict-safe attempts"
           exit 1
+
+      - name: Report actual content completeness
+        if: always()
+        run: |
+          python - <<'PYREPORT'
+          import json, os
+          from pathlib import Path
+          p = Path("frontend/data/content_refresh_status.json")
+          if p.exists():
+              r = json.loads(p.read_text())
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+                  out.write(f"\n## Steam 內容對帳\n- 公開遊戲：{r['public_count']}\n- 本輪嘗試：{r['attempted']}\n- 補充成功：{r['enriched']}\n- 仍待補齊：{r['pending_count']}\n- 全部完成：{r['complete']}\n")
+                  for aid, gaps in r['pending_enrichment'].items():
+                      out.write(f"- AppID {aid}: {', '.join(gaps)}\n")
+          PYREPORT
