@@ -2,7 +2,7 @@ name: Steam qualified game content enrichment
 
 on:
   repository_dispatch:
-    types: [steam_game_qualified, steam_game_refresh]
+    types: [steam_game_qualified, steam_game_refresh, steam_game_twitch_discovered]
   workflow_dispatch:
     inputs:
       appid:
@@ -35,9 +35,12 @@ jobs:
     timeout-minutes: 15
     env:
       APPID: ${{ github.event.client_payload.appid || inputs.appid }}
-      OFFICIAL_FOLLOWERS: ${{ github.event.client_payload.official_followers || inputs.official_followers }}
+      OFFICIAL_FOLLOWERS: ${{ github.event.client_payload.official_followers != null && format('{0}', github.event.client_payload.official_followers) || inputs.official_followers }}
       RELEASE_DATE: ${{ github.event.client_payload.release_date || inputs.release_date }}
       OFFICIAL_CHECKED_AT_TAIPEI: ${{ github.event.client_payload.official_checked_at_taipei || inputs.official_checked_at_taipei }}
+      EVENT_ACTION: ${{ github.event.action }}
+      TWITCH_ADMISSION_JSON: ${{ toJSON(github.event.client_payload.twitch_admission) }}
+      TWITCH_ADMISSION_PATH: ${{ runner.temp }}/twitch-admission.json
 
     steps:
       - name: Checkout independent content backend code
@@ -51,14 +54,31 @@ jobs:
       - name: Validate qualified-game event
         run: |
           python - <<'PY'
-          import os,re
+          import json,os,re,sys
+          from datetime import date
+          from pathlib import Path
+          sys.path.insert(0,"content_backend")
+          from urllib.request import urlopen
+          from twitch_steam_admission import normalize_twitch_admission, validate_twitch_snapshot
           appid=os.environ.get("APPID","")
           followers=os.environ.get("OFFICIAL_FOLLOWERS","")
           release=os.environ.get("RELEASE_DATE","")
           assert appid.isdigit() and int(appid)>0, appid
-          assert followers.isdigit() and int(followers)>=5000, followers
-          assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", release), release
-          print("CONTENT_EVENT_VALID", appid, followers, release)
+          raw = json.loads(os.environ.get("TWITCH_ADMISSION_JSON") or "null")
+          proof = normalize_twitch_admission(raw, appid)
+          assert raw is None or proof is not None, "Invalid Twitch admission proof"
+          assert os.environ.get("EVENT_ACTION") != "steam_game_twitch_discovered" or proof is not None
+          assert followers.isdigit() and (int(followers)>=5000 or proof is not None), followers
+          assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", release) and date.fromisoformat(release), release
+          if proof is not None:
+              base = "https://raw.githubusercontent.com/danielet087/game-trend-radar/" + proof["source_frontend_commit"] + "/data/"
+              with urlopen(base + "twitch_tracking.json", timeout=30) as response:
+                  registry = json.load(response)
+              with urlopen(base + "twitch_steam_discovery.json", timeout=30) as response:
+                  discovery = json.load(response)
+              assert validate_twitch_snapshot(proof, registry, discovery), "Twitch admission source snapshot does not match"
+              Path(os.environ["TWITCH_ADMISSION_PATH"]).write_text(json.dumps(proof), encoding="utf-8")
+          print("CONTENT_EVENT_VALID", appid, followers, release, "twitch_source", proof is not None)
           PY
 
       - name: Set up Python 3.12
@@ -92,24 +112,30 @@ jobs:
           if [ "$EVENT_ACTION" = "steam_game_refresh" ]; then
             FORCE_ARG="--force"
           fi
+          ADMISSION_ARGS=()
+          if [ -f "$TWITCH_ADMISSION_PATH" ]; then
+            ADMISSION_ARGS=(--twitch-admission "$TWITCH_ADMISSION_PATH")
+          fi
           python content_backend/enrich_game.py \
             --appid "$APPID" \
             --followers "$OFFICIAL_FOLLOWERS" \
             --release-date "$RELEASE_DATE" \
             --follower-checked-at "$OFFICIAL_CHECKED_AT_TAIPEI" \
             --data-dir frontend/data \
-            $FORCE_ARG
+            "${ADMISSION_ARGS[@]}" $FORCE_ARG
 
       - name: Validate public contract before publishing
         run: |
           python - <<'PY'
-          import json,os,re
+          import json,os,re,sys
           from pathlib import Path
+          sys.path.insert(0,"content_backend")
+          from twitch_steam_admission import is_twitch_qualified
           aid=int(os.environ["APPID"])
           p=Path(f"frontend/data/games/{aid}.json")
           row=json.loads(p.read_text(encoding="utf-8"))
           assert int(row.get("appid",-1))==aid
-          assert int(row["followers"])>=5000
+          assert int(row["followers"])>=5000 or is_twitch_qualified(row)
           assert row.get("release_display_precision")=="date_full"
           assert row.get("release_precision")=="day"
           assert row.get("release_date_timezone")=="Asia/Taipei"
@@ -185,6 +211,7 @@ jobs:
           import json, os, re
           from pathlib import Path
           from enrich_game import upsert_sharded
+          from twitch_steam_admission import is_twitch_qualified
 
           cache = json.loads(Path(os.environ["RECORD_PATH"]).read_text(encoding="utf-8"))
           appid = int(os.environ["APPID"])
@@ -202,6 +229,7 @@ jobs:
               (data_dir / "games" / f"{appid}.json").read_text(encoding="utf-8")
           )
           assert int(row.get("appid", -1)) == appid
+          assert int(row["followers"])>=5000 or is_twitch_qualified(row)
           assert row.get("content_enrichment_signature") == (
               f"{appid}:{cache['followers']}:{row['release_start']}"
           )

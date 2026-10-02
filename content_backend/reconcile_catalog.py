@@ -6,6 +6,7 @@ with their published records; preserve useful data on partial upstream failure.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import requests
 from public_catalog import keep_newer_release
+from twitch_steam_admission import is_twitch_qualified, normalize_twitch_admission
 from enrich_game import (
     SteamRateLimit, TAIPEI, _shard_in_sync, _rebuild_small_indexes, _write_json, build_record,
     excluded_public_appids, upsert_sharded, utc_now, valid_date,
@@ -25,6 +27,9 @@ def metadata_gaps(record: dict | None, source: dict) -> list[str]:
     gaps = []
     if record.get('release_start') != source['release_start'] or int(record.get('followers') or 0) != int(source['followers']):
         gaps.append('source_changed')
+    admission = normalize_twitch_admission(source.get('twitch_admission'), source.get('appid'))
+    if admission is not None and normalize_twitch_admission(record.get('twitch_admission'), source.get('appid')) != admission:
+        gaps.append('twitch_admission')
     if not (record.get('header_image') or record.get('main_capsule_image')):
         gaps.append('artwork')
     # An empty optional 2x URL is valid when Steam has been checked and has none.
@@ -69,7 +74,7 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
             continue
         day = source.get('release_start')
         historical = valid_date(day) and day < today and (data_dir / 'games' / f'{appid}.json').exists()
-        if appid > 0 and followers >= 5000 and valid_date(day) and appid not in blocked and (
+        if appid > 0 and (followers >= 5000 or is_twitch_qualified(source)) and valid_date(day) and appid not in blocked and (
             source.get('release_display_precision') == 'date_full' or historical):
             current = read_json(data_dir / 'games' / f'{appid}.json', {})
             qualified[appid] = keep_newer_release(current, source)
@@ -88,6 +93,9 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
         gaps = metadata_gaps(record, source)
         if gaps and counts['attempted'] < max_enrich and time.monotonic() - started < max_seconds:
             signature = f"{appid}:{source['followers']}:{source['release_start']}"
+            admission = normalize_twitch_admission(source.get('twitch_admission'), appid)
+            if admission is not None:
+                signature += ':' + hashlib.sha256(json.dumps(admission, sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:20]
             prior_failure = failures.get(str(appid), {})
             retry_at = prior_failure.get('retry_after', '')
             if prior_failure.get('signature') == signature and retry_at and retry_at > utc_now():
@@ -102,7 +110,8 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
                     enriched = build_record(session, appid=appid, followers=int(source['followers']),
                                             event_release_date=source['release_start'],
                                             follower_checked_at=source.get('follower_checked_at'),
-                                            allow_historical=source['release_start'] < today and isinstance(record, dict))
+                                            allow_historical=source['release_start'] < today and isinstance(record, dict),
+                                            twitch_admission=admission)
                     if cached_path:
                         _write_json(cached_path, {'signature': signature, 'record': enriched})
                 upsert_sharded(data_dir, enriched, source['release_start'], force=True)

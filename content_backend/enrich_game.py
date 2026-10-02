@@ -15,6 +15,7 @@ from opencc import OpenCC
 from public_catalog import keep_newer_release, write_catalog_projection
 from localized_descriptions import description_fields, merge_description_fields
 from steam_taxonomy import TAG_LIST, parse_store_taxonomy, preserve_taxonomy
+from twitch_steam_admission import is_twitch_qualified, normalize_twitch_admission
 
 LOG = logging.getLogger(__name__)
 
@@ -39,6 +40,41 @@ OTHER_LANGUAGE_NAMES = {
     22: "巴西葡萄牙文", 23: "保加利亞文", 24: "希臘文", 25: "阿拉伯文",
     26: "烏克蘭文", 27: "拉丁美洲西班牙文", 28: "越南文",
 }
+SEXUAL_CONTENT_IDS = frozenset({3, 4})
+EXPLICIT_DESC = re.compile(
+    r"\b(?:nsfw|hentai|pornograph(?:y|ic)|erotic(?:a)?|sex game|adult game|"
+    r"sexually explicit|explicit sexual|uncensored sexual|sex scenes|"
+    r"sexual acts|lots of sex)\b", re.I,
+)
+
+
+def is_explicit_sex_game(store_item: dict) -> bool:
+    """Same formal rule as main backend screen_steam_candidates_before_followers."""
+    ids = set(store_item.get('content_descriptorids') or [])
+    if ids & SEXUAL_CONTENT_IDS:
+        return True
+    tags = [row.get('tagid') for row in (store_item.get('tags') or []) if isinstance(row, dict)]
+    description = str((store_item.get('basic_info') or {}).get('short_description') or '')
+    return bool(12095 in tags[:5] and (9130 in tags[:10] or 6650 in tags[:5]) and EXPLICIT_DESC.search(description))
+
+
+def exact_store_display_date(value: object) -> str | None:
+    """Accept only a full official day; never infer a quarter/month boundary."""
+    if not isinstance(value, str):
+        return None
+    text = ' '.join(value.split()).strip()
+    if valid_date(text):
+        return text
+    match = re.fullmatch(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日', text)
+    if match:
+        candidate = f'{int(match[1]):04d}-{int(match[2]):02d}-{int(match[3]):02d}'
+        return candidate if valid_date(candidate) else None
+    for fmt in ('%d %b, %Y', '%d %B, %Y', '%b %d, %Y', '%B %d, %Y', '%d %b %Y', '%d %B %Y'):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return None
 
 
 def utc_now() -> str:
@@ -286,18 +322,35 @@ def build_record(
     event_release_date: str,
     follower_checked_at: str | None,
     allow_historical: bool = False,
+    twitch_admission: dict | None = None,
 ) -> dict:
+    admission = normalize_twitch_admission(twitch_admission, appid)
+    if twitch_admission is not None and admission is None:
+        raise RuntimeError('Invalid Twitch Steam admission proof')
+    if type(followers) is not int or followers < 0 or (followers < 5000 and admission is None):
+        raise RuntimeError('Steam Followers must be verified; low counts require Twitch admission')
     en = browse_one(session, appid, "english")
     time.sleep(1.0)
     tw = browse_one(session, appid, "tchinese")
     time.sleep(1.0)
     cn = browse_one(session, appid, "schinese")
     details = appdetails(session, appid)
+    if admission is not None and details.get('type') != 'game':
+        raise RuntimeError(f'Steam AppID {appid} is not a verified Steam game')
+    if admission is not None and (type(details.get('steam_appid')) is not int or details['steam_appid'] != appid):
+        raise RuntimeError(f'Steam appdetails identity does not match AppID {appid}')
+    if admission is not None and (en.get('success') != 1 or en.get('visible') is False):
+        raise RuntimeError(f'Steam AppID {appid} is unavailable in the Taiwan Store')
     descriptor_data = details.get("content_descriptors") or {}
     descriptor_ids = descriptor_data.get("ids", []) if isinstance(descriptor_data, dict) else []
     descriptor_ids = list(descriptor_ids) + list(en.get("content_descriptorids") or [])
     if {int(x) for x in descriptor_ids} & {3, 4}:
         raise RuntimeError(f"Steam AppID {appid} has adult-only sexual content descriptors")
+    screened = dict(en)
+    if not isinstance(screened.get('tags'), list):
+        screened['tags'] = [{'tagid': tag_id} for tag_id in (en.get('tagids') or [])]
+    if admission is not None and is_explicit_sex_game(screened):
+        raise RuntimeError(f'Steam AppID {appid} failed the formal sexual-content screen')
     taxonomy = taxonomy_fields(fetch_store_taxonomy(session, appid), appid)
     if not taxonomy["tags"] and en.get("tagids"):
         taxonomy["tags_fetch_status"] = "retry"
@@ -311,9 +364,10 @@ def build_record(
     release = en.get("release") or {}
     stamp = release.get("steam_release_date")
     historical_release = (
-        allow_historical
+        (allow_historical or admission is not None)
         and valid_date(event_release_date)
-        and event_release_date < datetime.now(TAIPEI).date().isoformat()
+        and (event_release_date < datetime.now(TAIPEI).date().isoformat()
+             or (admission is not None and event_release_date == datetime.now(TAIPEI).date().isoformat()))
         and str(stamp).isdigit()
         and 0 < int(stamp) <= datetime.now(timezone.utc).timestamp()
         and not release.get("is_coming_soon", en.get("is_coming_soon", False))
@@ -336,6 +390,12 @@ def build_record(
         release_timestamp_taipei_date is not None
         and release_timestamp_taipei_date != event_release_date
     )
+    if admission is not None and (release_time_utc is None or release_date_conflict):
+        raise RuntimeError(f'Steam AppID {appid} release timestamp does not agree with the Taiwan date')
+    if admission is not None and historical_release:
+        official_day = exact_store_display_date((details.get('release_date') or {}).get('date'))
+        if official_day != event_release_date or (details.get('release_date') or {}).get('coming_soon') is True:
+            raise RuntimeError(f'Steam AppID {appid} does not have a matching exact released Store date')
 
     assets = en.get("assets") or {}
     if not isinstance(assets, dict):
@@ -388,7 +448,7 @@ def build_record(
         "followers": followers,
         "follower_checked_at": follower_checked_at,
         "follower_source": "Steam Community XML memberCount",
-        "official_ge5000": True,
+        "official_ge5000": followers >= 5000,
         "sexual_content_screened": True,
         "capsule_image": capsule,
         "header_image": header,
@@ -414,7 +474,14 @@ def build_record(
         ),
         "content_enrichment_version": 4,
     }
-    if historical_release:
+    if details.get('type') == 'game':
+        record['steam_type'] = 'game'
+    record['content_descriptorids'] = sorted({int(x) for x in descriptor_ids})
+    if admission is not None:
+        record['twitch_admission'] = admission
+        if not is_twitch_qualified(record):
+            raise RuntimeError(f'Steam AppID {appid} failed Twitch-source Steam qualification')
+    if historical_release and admission is None:
         # This permission is only for metadata on an already published title.
         # Keep its existing date evidence; do not pretend to re-verify a
         # coming-soon Store display that no longer exists after release.
@@ -437,6 +504,8 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
         (g for g in games if int(g.get("appid", -1)) == appid), None
     )
     record = keep_newer_release(existing or {}, record)
+    if 'twitch_admission' in record and not is_twitch_qualified(record):
+        raise RuntimeError(f'AppID {appid} has an invalid Twitch-source Steam qualification')
     signature = f"{appid}:{record['followers']}:{record['release_start']}"
     if existing:
         already = (
@@ -444,7 +513,8 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
             and existing.get("header_image")
             and isinstance(existing.get("language_support"), dict)
             and isinstance(existing.get("tags"), list)
-            and int(existing.get("followers", 0)) >= 5000
+            and (int(existing.get("followers", 0)) >= 5000 or is_twitch_qualified(existing))
+            and existing.get('twitch_admission') == record.get('twitch_admission')
         )
         if already and not force:
             return False
@@ -527,7 +597,7 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
         except (TypeError, ValueError):
             continue
         release = row.get("release_start")
-        if appid <= 0 or followers < 3000 or not valid_date(release):
+        if appid <= 0 or (followers < 3000 and not is_twitch_qualified(row)) or not valid_date(release):
             continue
         rows.append(row)
 
@@ -544,13 +614,14 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
 
     upcoming = [
         int(row["appid"]) for row in rows
-        if row["release_start"] >= today_s and int(row["followers"]) >= 5000
+        if row["release_start"] >= today_s and (int(row["followers"]) >= 5000 or is_twitch_qualified(row))
     ]
     released = [
         int(row["appid"]) for row in rows
         if released_from <= row["release_start"] < today_s
         and (
             int(row["followers"]) >= 5000
+            or is_twitch_qualified(row)
             or (
                 int(row["followers"]) > 3000
                 and row.get("recent_source") in {"tracked_release", "direct_release"}
@@ -610,10 +681,10 @@ def _shard_in_sync(data_dir: Path, record: dict) -> bool:
         fallback = next(x for x in legacy["games"] if int(x["appid"]) == appid)
         today = datetime.now(TAIPEI).date()
         day = datetime.fromisoformat(release).date()
-        expected_upcoming = day >= today and int(record["followers"]) >= 5000
+        expected_upcoming = day >= today and (int(record["followers"]) >= 5000 or is_twitch_qualified(record))
         expected_released = (
             today - timedelta(days=30) <= day < today
-            and (int(record["followers"]) >= 5000 or (
+            and (int(record["followers"]) >= 5000 or is_twitch_qualified(record) or (
                 int(record["followers"]) > 3000
                 and record.get("recent_source") in {"tracked_release", "direct_release"}
             ))
@@ -664,6 +735,8 @@ def upsert_sharded(
             existing = {}
 
     record = keep_newer_release(existing, record)
+    if 'twitch_admission' in record and not is_twitch_qualified(record):
+        raise RuntimeError(f'AppID {appid} has an invalid Twitch-source Steam qualification')
     # An older queued event must not roll back a more recent official result.
     try:
         old_at = datetime.fromisoformat(str(existing.get("follower_checked_at")).replace("Z", "+00:00"))
@@ -679,7 +752,8 @@ def upsert_sharded(
         and existing.get("header_image")
         and isinstance(existing.get("language_support"), dict)
         and isinstance(existing.get("tags"), list)
-        and int(existing.get("followers", 0)) >= 5000
+        and (int(existing.get("followers", 0)) >= 5000 or is_twitch_qualified(existing))
+        and existing.get('twitch_admission') == record.get('twitch_admission')
     )
     if already and not force:
         if _shard_in_sync(data_dir, existing):
@@ -719,10 +793,16 @@ def main() -> None:
     parser.add_argument("--follower-checked-at")
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument('--twitch-admission', type=Path, help='Verified Twitch discovery proof JSON')
     args = parser.parse_args()
     if args.appid <= 0:
         raise SystemExit("appid must be positive")
-    if args.followers < 5000:
+    admission = None
+    if args.twitch_admission is not None:
+        admission = normalize_twitch_admission(json.loads(args.twitch_admission.read_text(encoding='utf-8')), args.appid)
+        if admission is None:
+            raise SystemExit('Invalid Twitch Steam admission proof')
+    if args.followers < 0 or (args.followers < 5000 and admission is None):
         raise SystemExit(
             "content backend only accepts official Followers >= 5000"
         )
@@ -742,6 +822,7 @@ def main() -> None:
         followers=args.followers,
         event_release_date=args.release_date,
         follower_checked_at=args.follower_checked_at,
+        twitch_admission=admission,
     )
     changed = upsert_sharded(
         args.data_dir, record, args.release_date, force=args.force

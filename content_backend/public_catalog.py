@@ -3,6 +3,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from twitch_steam_admission import preserve_twitch_admission
 
 RELEASE_FIELDS = (
     'release_raw', 'release_start', 'release_end', 'release_precision',
@@ -21,7 +22,9 @@ def keep_newer_release(existing: dict, incoming: dict) -> dict:
             return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
         except (ValueError, TypeError):
             return datetime.min.replace(tzinfo=timezone.utc)
-    result = dict(incoming)
+    result = preserve_twitch_admission(existing, incoming)
+    # Admission is an independent source. Ordinary metadata refreshes cannot
+    # erase a verified Twitch discovery, including when Followers remain low.
     if existing.get('release_display_precision') == 'date_full' and checked_at(existing) > checked_at(incoming):
         for key in RELEASE_FIELDS:
             if key in existing:
@@ -40,6 +43,9 @@ FIELDS = (
     'small_capsule_image', 'capsule_image', 'tags', 'genres',
     'tag_ids', 'tag_labels_zh_tw', 'genre_labels_zh_tw',
     'content_enriched_at', 'tags_fetch_status',
+    'twitch_admission', 'steam_type', 'sexual_content_screened',
+    'release_time_utc', 'release_date_conflict', 'official_ge5000',
+    'release_timestamp_taipei_date', 'content_descriptorids',
 )
 
 
