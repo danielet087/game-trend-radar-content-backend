@@ -1,9 +1,21 @@
 name: Reconcile verified Steam catalog
+run-name: "Steam catalog reconcile | slot=${{ inputs.target_slot || 'manual' }} | source=${{ inputs.trigger_source || github.event_name }}"
 on:
   schedule:
     - cron: "30 7,19 * * *"
       timezone: "Asia/Taipei"
   workflow_dispatch:
+    inputs:
+      target_slot:
+        description: External scheduler slot identifier (leave empty for a manual run)
+        required: false
+        type: string
+        default: ''
+      trigger_source:
+        description: Trigger source for run identification
+        required: false
+        type: string
+        default: manual
 permissions:
   contents: read
 concurrency:
