@@ -15,7 +15,7 @@ from opencc import OpenCC
 from public_catalog import keep_newer_release, write_catalog_projection
 from localized_descriptions import description_fields, merge_description_fields
 from steam_taxonomy import TAG_LIST, parse_store_taxonomy, preserve_taxonomy
-from twitch_steam_admission import is_twitch_qualified, normalize_twitch_admission
+from twitch_steam_admission import is_twitch_qualified, normalize_twitch_admission, resolve_store_release_day
 
 LOG = logging.getLogger(__name__)
 
@@ -392,9 +392,15 @@ def build_record(
     )
     if admission is not None and (release_time_utc is None or release_date_conflict):
         raise RuntimeError(f'Steam AppID {appid} release timestamp does not agree with the Taiwan date')
+    release_date_resolution = None
     if admission is not None and historical_release:
         official_day = exact_store_display_date((details.get('release_date') or {}).get('date'))
-        if official_day != event_release_date or (details.get('release_date') or {}).get('coming_soon') is not False:
+        release_date_resolution = resolve_store_release_day(official_day, release_time_utc)
+        if (
+            release_date_resolution is None
+            or release_date_resolution['release_start'] != event_release_date
+            or (details.get('release_date') or {}).get('coming_soon') is not False
+        ):
             raise RuntimeError(f'Steam AppID {appid} does not have a matching exact released Store date')
 
     assets = en.get("assets") or {}
@@ -476,6 +482,8 @@ def build_record(
     }
     if details.get('type') == 'game':
         record['steam_type'] = 'game'
+    if release_date_resolution is not None:
+        record.update(release_date_resolution)
     record['content_descriptorids'] = sorted({int(x) for x in descriptor_ids})
     if admission is not None:
         record['twitch_admission'] = admission

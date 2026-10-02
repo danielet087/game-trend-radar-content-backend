@@ -147,6 +147,47 @@ class TwitchAdmissionTests(unittest.TestCase):
         details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []}, 'release_date': {'date': day, 'coming_soon': False}}
         self.assertTrue(is_twitch_qualified(build(base=base, details=details, event_release_date=day)))
 
+    def test_halloween_utc_store_day_publishes_on_taipei_day(self):
+        instant = datetime.fromisoformat('2026-09-08T16:00:00+00:00')
+        base = mocks(name='Halloween: The Game', release={
+            'steam_release_date': int(instant.timestamp()), 'is_coming_soon': False,
+        })
+        details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
+                   'release_date': {'date': '2026 年 9 月 8 日', 'coming_soon': False}}
+        record = build(base=base, details=details, event_release_date='2026-09-09')
+        self.assertTrue(is_twitch_qualified(record))
+        self.assertEqual(record['release_start'], '2026-09-09')
+        self.assertEqual(record['release_end'], '2026-09-09')
+        self.assertEqual(record['release_store_date'], '2026-09-08')
+        self.assertEqual(record['release_date_normalization'], 'steam_utc_date_normalized_to_taipei')
+        self.assertFalse(record['release_date_conflict'])
+        with self.assertRaisesRegex(RuntimeError, 'timestamp does not agree'):
+            build(base=base, details=details, event_release_date='2026-09-08')
+
+    def test_cross_midnight_still_rejects_unrelated_or_inexact_store_dates(self):
+        instant = datetime.fromisoformat('2026-09-08T16:00:00+00:00')
+        base = mocks(release={'steam_release_date': int(instant.timestamp()), 'is_coming_soon': False})
+        details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []}}
+        for release in [
+            {'date': '2026-09-07', 'coming_soon': False},
+            {'date': '2026-09-10', 'coming_soon': False},
+            {'date': 'September 2026', 'coming_soon': False},
+            {'date': '2026-09-08', 'coming_soon': True},
+            {'date': '2026-09-08'},
+        ]:
+            with self.subTest(release=release), self.assertRaisesRegex(RuntimeError, 'matching exact'):
+                build(base=base, details={**details, 'release_date': release}, event_release_date='2026-09-09')
+
+    def test_matching_taipei_store_day_records_date_evidence(self):
+        instant = datetime.fromisoformat('2026-09-08T16:00:00+00:00')
+        base = mocks(release={'steam_release_date': int(instant.timestamp()), 'is_coming_soon': False})
+        details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
+                   'release_date': {'date': '2026-09-09', 'coming_soon': False}}
+        record = build(base=base, details=details, event_release_date='2026-09-09')
+        self.assertTrue(is_twitch_qualified(record))
+        self.assertEqual(record['release_store_date'], '2026-09-09')
+        self.assertEqual(record['release_date_normalization'], 'steam_store_date_matches_taipei')
+
     def test_low_count_reaches_shards_calendar_lists_and_projection(self):
         for day in ['2030-01-01', (datetime.now(timezone.utc).date() - timedelta(days=2)).isoformat()]:
             with self.subTest(day=day), tempfile.TemporaryDirectory() as tmp:
