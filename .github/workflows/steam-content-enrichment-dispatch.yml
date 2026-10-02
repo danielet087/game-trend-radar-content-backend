@@ -40,7 +40,7 @@ jobs:
       OFFICIAL_CHECKED_AT_TAIPEI: ${{ github.event.client_payload.official_checked_at_taipei || inputs.official_checked_at_taipei }}
       EVENT_ACTION: ${{ github.event.action }}
       TWITCH_ADMISSION_JSON: ${{ toJSON(github.event.client_payload.twitch_admission) }}
-      TWITCH_ADMISSION_PATH: ${{ runner.temp }}/twitch-admission.json
+      TWITCH_ADMISSION_PATH: twitch-admission.json
 
     steps:
       - name: Checkout independent content backend code

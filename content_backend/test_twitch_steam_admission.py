@@ -135,7 +135,9 @@ class TwitchAdmissionTests(unittest.TestCase):
         self.assertTrue(is_twitch_qualified(record))
         self.assertEqual(record['release_display_precision'], 'date_full')
         self.assertIsNotNone(record['release_date_verified_at'])
-        for bad in [{'date': 'September 2026'}, {'date': '2026 年 9 月 28 日'}, {'date': day, 'coming_soon': True}]:
+        base['release'].pop('is_coming_soon')
+        self.assertTrue(is_twitch_qualified(build(base=base, details=details, event_release_date=day)))
+        for bad in [{'date': 'September 2026'}, {'date': '2026 年 9 月 28 日'}, {'date': day, 'coming_soon': True}, {'date': day}]:
             with self.assertRaisesRegex(RuntimeError, 'matching exact'):
                 build(base=base, details={**details, 'release_date': bad}, event_release_date=day)
 

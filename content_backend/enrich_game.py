@@ -394,7 +394,7 @@ def build_record(
         raise RuntimeError(f'Steam AppID {appid} release timestamp does not agree with the Taiwan date')
     if admission is not None and historical_release:
         official_day = exact_store_display_date((details.get('release_date') or {}).get('date'))
-        if official_day != event_release_date or (details.get('release_date') or {}).get('coming_soon') is True:
+        if official_day != event_release_date or (details.get('release_date') or {}).get('coming_soon') is not False:
             raise RuntimeError(f'Steam AppID {appid} does not have a matching exact released Store date')
 
     assets = en.get("assets") or {}
