@@ -13,7 +13,11 @@ from unittest.mock import patch
 from enrich_game import build_record, upsert_sharded, _shard_in_sync
 from public_catalog import keep_newer_release
 from reconcile_catalog import reconcile, metadata_gaps
-from twitch_steam_admission import has_twitch_admission, is_twitch_qualified, normalize_twitch_admission, validate_twitch_snapshot
+from twitch_steam_admission import (
+    TW_STORE_DATE_AUTHORITY, TW_STORE_DATE_PROVIDER, has_taiwan_store_date_authority,
+    has_twitch_admission, is_twitch_qualified, normalize_twitch_admission,
+    resolve_store_release_day, validate_twitch_snapshot,
+)
 
 
 def proof(appid=123):
@@ -187,6 +191,89 @@ class TwitchAdmissionTests(unittest.TestCase):
         self.assertTrue(is_twitch_qualified(record))
         self.assertEqual(record['release_store_date'], '2026-09-09')
         self.assertEqual(record['release_date_normalization'], 'steam_store_date_matches_taipei')
+
+    def test_onimusha_store_day_is_used_and_actual_timestamp_is_preserved(self):
+        base = mocks(name='Onimusha: Way of the Sword', release={
+            'steam_release_date': 1788494534, 'is_coming_soon': False,
+        })
+        details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
+                   'release_date': {'date': '2026 年 9 月 3 日', 'coming_soon': False}}
+        record = build(base=base, details=details, event_release_date='2026-09-03', followers=0)
+        self.assertTrue(is_twitch_qualified(record))
+        self.assertTrue(has_taiwan_store_date_authority(record))
+        self.assertEqual(record['release_start'], '2026-09-03')
+        self.assertEqual(record['release_end'], '2026-09-03')
+        self.assertEqual(record['release_store_date'], '2026-09-03')
+        self.assertEqual(record['release_time_utc'], '2026-09-04T04:02:14Z')
+        self.assertEqual(record['release_timestamp_taipei_date'], '2026-09-04')
+        self.assertTrue(record['release_date_conflict'])
+        self.assertEqual(record['release_date_normalization'], TW_STORE_DATE_AUTHORITY)
+        self.assertEqual(record['release_display_provider'], TW_STORE_DATE_PROVIDER)
+        self.assertIsNotNone(record['release_date_verified_at'])
+
+    def test_visible_released_day_can_disagree_with_a_future_browse_instant(self):
+        base = mocks(release={'steam_release_date': 1893456000, 'is_coming_soon': False})
+        details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
+                   'release_date': {'date': '2026-09-03', 'coming_soon': False}}
+        record = build(base=base, details=details, event_release_date='2026-09-03')
+        self.assertTrue(is_twitch_qualified(record))
+        self.assertEqual(record['release_time_utc'], '2030-01-01T00:00:00Z')
+        self.assertEqual(record['release_timestamp_taipei_date'], '2030-01-01')
+        self.assertTrue(record['release_date_conflict'])
+
+    def test_upcoming_exact_store_day_also_has_explicit_date_authority(self):
+        details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
+                   'release_date': {'date': '2030-01-03', 'coming_soon': True}}
+        record = build(details=details, event_release_date='2030-01-03')
+        self.assertTrue(is_twitch_qualified(record))
+        self.assertEqual(record['release_start'], '2030-01-03')
+        self.assertEqual(record['release_timestamp_taipei_date'], '2030-01-01')
+        self.assertTrue(record['release_date_conflict'])
+        self.assertIsNone(resolve_store_release_day('2030-01-03', record['release_time_utc']))
+
+    def test_date_authority_cannot_replace_exact_store_evidence_or_identity(self):
+        base = mocks(release={'steam_release_date': 1788494534, 'is_coming_soon': False})
+        details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
+                   'release_date': {'date': '2026-09-03', 'coming_soon': False}}
+        source = build(base=base, details=details, event_release_date='2026-09-03')
+        for changes in [
+            {'release_store_date': '2026-09'}, {'release_store_date': '2026-09-04'},
+            {'release_end': '2026-09-04'}, {'release_date_verified_at': '2026-10-03'},
+            {'release_display_provider': 'Steam'}, {'release_timestamp_taipei_date': '2026-09-03'},
+            {'release_date_conflict': False}, {'release_date_conflict': 1},
+            {'release_time_utc': None}, {'twitch_admission': None}, {'steam_type': 'dlc'},
+            {'sexual_content_screened': False}, {'followers': None}, {'follower_checked_at': None},
+        ]:
+            with self.subTest(changes=changes):
+                self.assertFalse(is_twitch_qualified(dict(source, **changes)))
+        for visible in [{'date': 'September 2026', 'coming_soon': False},
+                        {'date': '2026-09-03', 'coming_soon': True},
+                        {'date': '2026-09-03'}, {'date': '2026-09-02', 'coming_soon': False}]:
+            with self.subTest(visible=visible), self.assertRaises(RuntimeError):
+                build(base=base, details={**details, 'release_date': visible}, event_release_date='2026-09-03')
+
+    def test_authoritative_date_survives_calendar_projection_and_reconcile(self):
+        details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
+                   'release_date': {'date': '2030-01-03', 'coming_soon': True}}
+        source = build(details=details, event_release_date='2030-01-03', followers=0)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / 'data'
+            data.mkdir()
+            (data / 'excluded_appids.json').write_text('{"appids": []}')
+            master = root / 'master.json'
+            master.write_text(json.dumps({'games': [source]}))
+            with patch('reconcile_catalog.build_record', return_value=source):
+                result = reconcile(master, data, 1)
+            self.assertEqual(result['qualified_master'], 1)
+            self.assertEqual(result['public_count'], 1)
+            month = json.loads((data / 'calendar/2030-01.json').read_text())['games'][0]
+            catalog = json.loads((data / 'catalog.json').read_text())['games'][0]
+            self.assertTrue(is_twitch_qualified(month))
+            self.assertTrue(is_twitch_qualified(catalog))
+            self.assertEqual(catalog['release_display_provider'], TW_STORE_DATE_PROVIDER)
+            self.assertEqual(catalog['release_date_verified_at'], source['release_date_verified_at'])
+            self.assertTrue(_shard_in_sync(data, month))
 
     def test_low_count_reaches_shards_calendar_lists_and_projection(self):
         for day in ['2030-01-01', (datetime.now(timezone.utc).date() - timedelta(days=2)).isoformat()]:

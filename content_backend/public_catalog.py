@@ -48,6 +48,7 @@ FIELDS = (
     'release_time_utc', 'release_date_conflict', 'official_ge5000',
     'release_timestamp_taipei_date', 'content_descriptorids',
     'release_store_date', 'release_date_normalization',
+    'release_display_provider', 'release_date_verified_at',
 )
 
 

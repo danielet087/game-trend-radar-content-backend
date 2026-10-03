@@ -15,7 +15,10 @@ from opencc import OpenCC
 from public_catalog import keep_newer_release, write_catalog_projection
 from localized_descriptions import description_fields, merge_description_fields
 from steam_taxonomy import TAG_LIST, parse_store_taxonomy, preserve_taxonomy
-from twitch_steam_admission import is_twitch_qualified, normalize_twitch_admission, resolve_store_release_day
+from twitch_steam_admission import (
+    TW_STORE_DATE_AUTHORITY, TW_STORE_DATE_PROVIDER, is_twitch_qualified,
+    normalize_twitch_admission, resolve_store_release_day,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -363,20 +366,6 @@ def build_record(
 
     release = en.get("release") or {}
     stamp = release.get("steam_release_date")
-    historical_release = (
-        (allow_historical or admission is not None)
-        and valid_date(event_release_date)
-        and (event_release_date < datetime.now(TAIPEI).date().isoformat()
-             or (admission is not None and event_release_date == datetime.now(TAIPEI).date().isoformat()))
-        and str(stamp).isdigit()
-        and 0 < int(stamp) <= datetime.now(timezone.utc).timestamp()
-        and not release.get("is_coming_soon", en.get("is_coming_soon", False))
-        and not release.get("coming_soon_display")
-    )
-    if release.get("coming_soon_display") != "date_full" and not historical_release:
-        raise RuntimeError(
-            f"Steam AppID {appid} does not have a publicly announced exact Store date"
-        )
     release_time_utc = None
     release_start = event_release_date
     release_timestamp_taipei_date = None
@@ -390,18 +379,52 @@ def build_record(
         release_timestamp_taipei_date is not None
         and release_timestamp_taipei_date != event_release_date
     )
-    if admission is not None and (release_time_utc is None or release_date_conflict):
+    visible_release = details.get('release_date') or {}
+    visible_release = visible_release if isinstance(visible_release, dict) else {}
+    official_day = exact_store_display_date(visible_release.get('date'))
+    store_resolution = (
+        resolve_store_release_day(official_day, release_time_utc,
+                                  allow_taiwan_store_authority=True)
+        if admission is not None else None
+    )
+    # The TW Store's exact public announcement can disagree with Browse's
+    # instant, including a released game whose Browse instant is still future.
+    # Require the same AppID's visible Store date and released flag together.
+    twitch_exact_released = (
+        admission is not None
+        and valid_date(event_release_date)
+        and event_release_date <= datetime.now(TAIPEI).date().isoformat()
+        and visible_release.get('coming_soon') is False
+        and store_resolution is not None
+        and store_resolution['release_start'] == event_release_date
+    )
+    historical_release = (
+        (allow_historical or admission is not None)
+        and valid_date(event_release_date)
+        and (event_release_date < datetime.now(TAIPEI).date().isoformat()
+             or (admission is not None and event_release_date == datetime.now(TAIPEI).date().isoformat()))
+        and str(stamp).isdigit()
+        and 0 < int(stamp) <= datetime.now(timezone.utc).timestamp()
+        and not release.get("is_coming_soon", en.get("is_coming_soon", False))
+        and not release.get("coming_soon_display")
+    ) or twitch_exact_released
+    if release.get("coming_soon_display") != "date_full" and not historical_release:
+        raise RuntimeError(
+            f"Steam AppID {appid} does not have a publicly announced exact Store date"
+        )
+    if admission is not None and release_time_utc is None:
         raise RuntimeError(f'Steam AppID {appid} release timestamp does not agree with the Taiwan date')
     release_date_resolution = None
-    if admission is not None and historical_release:
-        official_day = exact_store_display_date((details.get('release_date') or {}).get('date'))
-        release_date_resolution = resolve_store_release_day(official_day, release_time_utc)
+    if admission is not None and (historical_release or release_date_conflict):
+        release_date_resolution = store_resolution
         if (
             release_date_resolution is None
             or release_date_resolution['release_start'] != event_release_date
-            or (details.get('release_date') or {}).get('coming_soon') is not False
+            or (historical_release and visible_release.get('coming_soon') is not False)
         ):
-            raise RuntimeError(f'Steam AppID {appid} does not have a matching exact released Store date')
+            if historical_release and not release_date_conflict:
+                raise RuntimeError(f'Steam AppID {appid} does not have a matching exact released Store date')
+            raise RuntimeError(f'Steam AppID {appid} release timestamp does not agree with the Taiwan date')
 
     assets = en.get("assets") or {}
     if not isinstance(assets, dict):
@@ -484,6 +507,9 @@ def build_record(
         record['steam_type'] = 'game'
     if release_date_resolution is not None:
         record.update(release_date_resolution)
+        if release_date_resolution['release_date_normalization'] == TW_STORE_DATE_AUTHORITY:
+            record['release_display_provider'] = TW_STORE_DATE_PROVIDER
+            record['release_date_verified_at'] = utc_now()
     record['content_descriptorids'] = sorted({int(x) for x in descriptor_ids})
     if admission is not None:
         record['twitch_admission'] = admission
