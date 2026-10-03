@@ -5,7 +5,7 @@
 ## 兩條觸發路徑
 
 - 即時事件：`steam_game_qualified`／`steam_game_refresh`／`steam_game_twitch_discovered`，補充單一 AppID，成功後合併公開資料。
-- 定時對帳：台灣時間每日 07:30、19:30，比對主後端與公開資料；先補未來新作，再補已收錄的歷史遊戲。每輪最多 60 款、40 分鐘內停止啟動新請求。
+- 定時對帳：台灣時間每日 07:30、19:30，由既有 [Cloudflare 排程控制器](https://github.com/danielet087/game-trend-radar-twitch-backend/tree/main/scheduler/cloudflare) 透過 `workflow_dispatch` 觸發；原 GitHub `schedule` 已移除。比對主後端與公開資料，先補未來新作，再補已收錄的歷史遊戲。每輪最多 60 款、40 分鐘內停止啟動新請求。既有 `repository_dispatch` 內容事件繼續即時處理。
 
 Twitch 正式新作是獨立收錄來源，可低於 5,000 Steam Followers。新事件與後續 refresh 必須提供完整 `twitch_admission`；內容後端讀取證據指定的同一 GitHub commit，核對 Twitch 正式入列、IGDB 身分與官方 Steam 外部 AppID，再驗證台灣商店正式遊戲、確切日期、UTC 一致性及成人內容規則。官方 Followers 仍由主後端查詢並提供，失敗不補零。沒有有效來源證據的事件沿用既有門檻。
 
