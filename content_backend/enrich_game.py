@@ -412,9 +412,23 @@ def build_record(
         raise RuntimeError(
             f"Steam AppID {appid} does not have a publicly announced exact Store date"
         )
+    # An existing historical record can carry an old candidate date. Correct
+    # it only when both fresh official sources agree on the same Taiwan day.
+    # This is ordinary date verification, not the Twitch conflict exception.
+    ordinary_exact_released = (
+        admission is None and allow_historical and historical_release
+        and details.get('type') == 'game'
+        and type(details.get('steam_appid')) is int and details['steam_appid'] == appid
+        and visible_release.get('coming_soon') is False
+        and official_day is not None and official_day == release_timestamp_taipei_date
+    )
     if admission is not None and release_time_utc is None:
         raise RuntimeError(f'Steam AppID {appid} release timestamp does not agree with the Taiwan date')
     release_date_resolution = None
+    if ordinary_exact_released:
+        release_start = official_day
+        release_date_conflict = False
+        release_date_resolution = resolve_store_release_day(official_day, release_time_utc)
     if admission is not None and (historical_release or release_date_conflict):
         release_date_resolution = store_resolution
         if (
@@ -507,15 +521,17 @@ def build_record(
         record['steam_type'] = 'game'
     if release_date_resolution is not None:
         record.update(release_date_resolution)
-        if release_date_resolution['release_date_normalization'] == TW_STORE_DATE_AUTHORITY:
+        if ordinary_exact_released or release_date_resolution['release_date_normalization'] == TW_STORE_DATE_AUTHORITY:
             record['release_display_provider'] = TW_STORE_DATE_PROVIDER
             record['release_date_verified_at'] = utc_now()
+        if ordinary_exact_released:
+            record['release_date_basis'] = 'steam_released_taiwan_store_date_verified'
     record['content_descriptorids'] = sorted({int(x) for x in descriptor_ids})
     if admission is not None:
         record['twitch_admission'] = admission
         if not is_twitch_qualified(record):
             raise RuntimeError(f'Steam AppID {appid} failed Twitch-source Steam qualification')
-    if historical_release and admission is None:
+    if historical_release and admission is None and not ordinary_exact_released:
         # This permission is only for metadata on an already published title.
         # Keep its existing date evidence; do not pretend to re-verify a
         # coming-soon Store display that no longer exists after release.

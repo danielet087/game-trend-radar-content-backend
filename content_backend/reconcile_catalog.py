@@ -14,7 +14,7 @@ from pathlib import Path
 
 import requests
 from public_catalog import keep_newer_release
-from twitch_steam_admission import is_twitch_qualified, normalize_twitch_admission
+from twitch_steam_admission import aware_time, is_twitch_qualified, normalize_twitch_admission
 from enrich_game import (
     SteamRateLimit, TAIPEI, _shard_in_sync, _rebuild_small_indexes, _write_json, build_record,
     excluded_public_appids, upsert_sharded, utc_now, valid_date,
@@ -24,12 +24,24 @@ from enrich_game import (
 def metadata_gaps(record: dict | None, source: dict) -> list[str]:
     if not isinstance(record, dict):
         return ['missing_record']
+    # A fresh date audit can finish while this run still holds an older master.
+    source = keep_newer_release(record, source)
     gaps = []
     if record.get('release_start') != source['release_start'] or int(record.get('followers') or 0) != int(source['followers']):
         gaps.append('source_changed')
     admission = normalize_twitch_admission(source.get('twitch_admission'), source.get('appid'))
     if admission is not None and normalize_twitch_admission(record.get('twitch_admission'), source.get('appid')) != admission:
         gaps.append('twitch_admission')
+    if (record.get('release_time_utc') is not None
+            or record.get('release_timestamp_taipei_date') is not None
+            or record.get('release_date_conflict') is True):
+        instant = aware_time(record.get('release_time_utc'))
+        timestamp_day = instant.astimezone(TAIPEI).date().isoformat() if instant is not None else None
+        conflict = record.get('release_start') != timestamp_day
+        if (timestamp_day is None or record.get('release_timestamp_taipei_date') != timestamp_day
+                or type(record.get('release_date_conflict')) is not bool
+                or record['release_date_conflict'] != conflict):
+            gaps.append('release_date_diagnostics')
     if not (record.get('header_image') or record.get('main_capsule_image')):
         gaps.append('artwork')
     # An empty optional 2x URL is valid when Steam has been checked and has none.
@@ -104,7 +116,9 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
             cached_path = cache_dir / f'{appid}.json' if cache_dir else None
             cached = read_json(cached_path) if cached_path else None
             try:
-                if cached and cached.get('signature') == signature and cached.get('record', {}).get('content_enrichment_version', 0) >= 4:
+                if ('release_date_diagnostics' not in gaps and cached
+                        and cached.get('signature') == signature
+                        and cached.get('record', {}).get('content_enrichment_version', 0) >= 4):
                     enriched = cached['record']
                 else:
                     enriched = build_record(session, appid=appid, followers=int(source['followers']),
