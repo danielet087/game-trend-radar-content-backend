@@ -74,6 +74,18 @@ class OfficialPlayerCategoryTests(unittest.TestCase):
         single = category_fields(browse([2]), {}, 123, CHECKED)
         self.assertEqual(preserve_player_categories(fields, single), single)
 
+    def test_stale_verified_modes_cannot_roll_back_newer_evidence_but_new_empty_can_clear(self):
+        latest = category_fields(browse([1, 39]), {}, 123, '2026-10-02T09:00:00Z')
+        older_empty = category_fields(browse([]), {}, 123, '2026-10-02T16:30:00+08:00')
+        self.assertEqual(preserve_player_categories(latest, older_empty), latest)
+        newer_empty = category_fields(browse([]), {}, 123, '2026-10-02T17:30:00+08:00')
+        self.assertEqual(preserve_player_categories(latest, newer_empty), newer_empty)
+        # An older multiplayer result must not resurrect a newer official
+        # empty result. Compare instants, rather than timezone string order.
+        self.assertEqual(preserve_player_categories(newer_empty, latest), newer_empty)
+        mismatched = {**older_empty, 'appid': 456}
+        self.assertEqual(preserve_player_categories({**latest, 'appid': 123}, mismatched), mismatched)
+
     def test_same_signature_backfill_updates_all_public_projections(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp)

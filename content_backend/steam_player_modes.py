@@ -20,19 +20,24 @@ def valid_categories(value: object) -> bool:
     )
 
 
-def has_verified_categories(record: dict) -> bool:
+def _category_checked_at(record: dict) -> datetime | None:
     try:
         value = record.get("categories_checked_at")
         checked = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
-        checked_valid = (checked is not None and checked.tzinfo is not None
-                         and checked.utcoffset() is not None
-                         and checked <= datetime.now(timezone.utc) + timedelta(minutes=5))
+        if (checked is not None and checked.tzinfo is not None
+                and checked.utcoffset() is not None
+                and checked <= datetime.now(timezone.utc) + timedelta(minutes=5)):
+            return checked
     except (ValueError, TypeError, OverflowError):
-        checked_valid = False
+        pass
+    return None
+
+
+def has_verified_categories(record: dict) -> bool:
     return (
         valid_categories(record.get("categories"))
         and record.get("categories_source") in {BROWSE_SOURCE, APPDETAILS_SOURCE}
-        and checked_valid
+        and _category_checked_at(record) is not None
     )
 
 
@@ -67,8 +72,14 @@ def category_fields(item: dict, details: dict, appid: int, checked_at: str) -> d
 
 
 def preserve_player_categories(existing: dict, incoming: dict) -> dict:
-    """Partial metadata failures cannot erase the last verified player modes."""
+    """Partial failures and stale snapshots cannot erase verified player modes."""
     result = dict(incoming)
-    if not has_verified_categories(incoming) and has_verified_categories(existing):
+    if ("appid" in existing and "appid" in incoming
+            and existing["appid"] != incoming["appid"]):
+        return result
+    if has_verified_categories(existing) and (
+        not has_verified_categories(incoming)
+        or _category_checked_at(incoming) < _category_checked_at(existing)
+    ):
         result.update({key: existing[key] for key in CATEGORY_FIELDS})
     return result
