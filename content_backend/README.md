@@ -13,6 +13,7 @@ For each accepted AppID it refreshes official/public Steam content:
 - Taiwan release timestamp/date
 - English / Traditional Chinese / Simplified Chinese Store names
 - game language support
+- official player categories (single-player, co-op, PvP, MMO and local multiplayer)
 - official header / main capsule artwork
 - genres
 - public Steam Store tags when available
@@ -24,6 +25,15 @@ The enriched record is then upserted into
 
 The operation is idempotent through
 `content_enrichment_signature = appid:followers:release_date`.
+
+Player modes come from the same AppID's official Steam `supported_player_categoryids`
+or verified `appdetails.categories`, not community tags or unrelated features such
+as Remote Play Together and Family Sharing. The public `categories` array keeps
+`id` and `description`, plus source and check time. Missing data remains unknown;
+a temporary failure preserves the previous verified categories. The existing
+bounded content reconciliation queue backfills older records with one Browse
+request when only player categories are missing, without querying Followers or
+changing release dates. No additional schedule is created.
 
 ## Event contract
 

@@ -15,6 +15,7 @@ from opencc import OpenCC
 from public_catalog import keep_newer_release, write_catalog_projection
 from localized_descriptions import description_fields, merge_description_fields
 from steam_taxonomy import TAG_LIST, parse_store_taxonomy, preserve_taxonomy
+from steam_player_modes import category_fields, has_verified_categories
 from twitch_steam_admission import (
     TW_STORE_DATE_AUTHORITY, TW_STORE_DATE_PROVIDER, is_twitch_qualified,
     normalize_twitch_admission, resolve_store_release_day,
@@ -141,6 +142,7 @@ def browse_one(session: requests.Session, appid: int, language: str) -> dict:
             "include_release": True,
             "include_assets": True,
             "include_supported_languages": True,
+            "include_categories": True,
             "include_tag_count": 20,
         },
     }
@@ -187,6 +189,17 @@ def official_chinese_title(value: object) -> str | None:
         return None
     value = value.strip()
     return value if value and len(value) <= 240 and HAN.search(value) else None
+
+
+def refresh_player_categories(session: requests.Session, appid: int) -> dict:
+    """One metadata request for an already qualified title; no date/Followers query."""
+    item = browse_one(session, appid, "english")
+    fields = category_fields(item, {}, appid, utc_now())
+    if not fields:
+        fields = category_fields({}, appdetails(session, appid), appid, utc_now())
+    if not fields:
+        raise RuntimeError(f"Steam player categories unavailable for AppID {appid}")
+    return fields
 
 
 def appdetails(session: requests.Session, appid: int, language: str = "tchinese") -> dict:
@@ -476,6 +489,7 @@ def build_record(
         "name_zh_cn_traditional": name_cn_traditional,
         "name_en_traditional": name_en,
         "language_support": read_support(en),
+        **category_fields(en, details, appid, utc_now()),
         "release_raw": release_start,
         "release_start": release_start,
         "release_end": release_start,
@@ -515,7 +529,7 @@ def build_record(
             + ("appdetails + " if details else "appdetails fallback + ")
             + "Taiwan Traditional Chinese Store tags and genres"
         ),
-        "content_enrichment_version": 4,
+        "content_enrichment_version": 5,
     }
     if details.get('type') == 'game':
         record['steam_type'] = 'game'
@@ -565,6 +579,8 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
             and isinstance(existing.get("tags"), list)
             and (int(existing.get("followers", 0)) >= 5000 or is_twitch_qualified(existing))
             and existing.get('twitch_admission') == record.get('twitch_admission')
+            and (not has_verified_categories(record) or (
+                has_verified_categories(existing) and existing['categories'] == record['categories']))
         )
         if already and not force:
             return False
@@ -804,6 +820,8 @@ def upsert_sharded(
         and isinstance(existing.get("tags"), list)
         and (int(existing.get("followers", 0)) >= 5000 or is_twitch_qualified(existing))
         and existing.get('twitch_admission') == record.get('twitch_admission')
+        and (not has_verified_categories(record) or (
+            has_verified_categories(existing) and existing['categories'] == record['categories']))
     )
     if already and not force:
         if _shard_in_sync(data_dir, existing):

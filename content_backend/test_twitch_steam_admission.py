@@ -29,6 +29,7 @@ def proof(appid=123):
 
 
 def row(day='2030-01-01', followers=240):
+    from steam_player_modes import BROWSE_SOURCE
     stamp = day + 'T00:00:00Z'
     return {'appid': 123, 'followers': followers, 'follower_checked_at': '2026-10-02T08:00:00Z',
             'release_start': day, 'release_end': day, 'release_precision': 'day',
@@ -37,7 +38,9 @@ def row(day='2030-01-01', followers=240):
             'steam_type': 'game', 'sexual_content_screened': True, 'twitch_admission': proof(),
             'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked',
             'tag_labels_language': 'zh-TW', 'genre_labels_language': 'zh-TW', 'language_support': {'english': True},
-            'tags': ['Action'], 'tags_fetch_status': 'ok', 'genres': ['Action'], 'genres_fetch_status': 'ok'}
+            'tags': ['Action'], 'tags_fetch_status': 'ok', 'genres': ['Action'], 'genres_fetch_status': 'ok',
+            'categories': [{'id': 2, 'description': 'Single-player'}],
+            'categories_source': BROWSE_SOURCE, 'categories_checked_at': '2026-10-02T08:00:00Z'}
 
 
 def mocks(day='2030-01-01', **changes):
@@ -46,6 +49,7 @@ def mocks(day='2030-01-01', **changes):
             'supported_languages': [{'elanguage': 0, 'supported': True}],
             'assets': {'asset_url_format': 'steam/apps/123/${FILENAME}', 'header': 'header.jpg'},
             'content_descriptorids': [], 'basic_info': {'short_description': 'An action game.'}}
+    base['categories'] = {'supported_player_categoryids': [2]}
     base.update(changes)
     return base
 

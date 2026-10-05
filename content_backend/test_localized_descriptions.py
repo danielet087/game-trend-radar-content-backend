@@ -65,6 +65,8 @@ class DescriptionTests(unittest.TestCase):
         base = {"appid": 123, "followers": 6000, "release_start": "2030-01-01", "header_image": "known",
                 "artwork_checked_at": "checked", "tags": ["Action"], "language_support": {"english": True},
                 "tag_labels_language": "zh-TW", "genre_labels_language": "zh-TW"}
+        from steam_player_modes import BROWSE_SOURCE
+        base.update(categories=[], categories_source=BROWSE_SOURCE, categories_checked_at="2026-10-02T08:00:00Z")
         self.assertEqual(metadata_gaps(base, base), ["description_unchecked"])
         base.update(description_checked_at="checked", short_description_source="unavailable")
         self.assertEqual(metadata_gaps(base, base), [])

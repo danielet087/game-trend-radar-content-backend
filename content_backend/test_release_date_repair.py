@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from enrich_game import build_record, upsert_sharded
 from reconcile_catalog import metadata_gaps, reconcile
+from steam_player_modes import BROWSE_SOURCE
 
 
 APPID = 4019220
@@ -24,12 +25,15 @@ def existing_record():
         'description_checked_at': 'checked', 'tag_labels_language': 'zh-TW',
         'genre_labels_language': 'zh-TW', 'language_support': {'english': True},
         'tags': ['Crafting'], 'tags_fetch_status': 'ok', 'content_enrichment_version': 4,
+        'categories': [{'id': 2, 'description': 'Single-player'}],
+        'categories_source': BROWSE_SOURCE, 'categories_checked_at': CHECKED_AT,
     }
 
 
 def browse_record():
     return {
         'appid': APPID, 'success': 1, 'visible': True, 'name': 'Dressmaker',
+        'categories': {'supported_player_categoryids': [2]},
         'release': {'steam_release_date': 1789990310},
         'supported_languages': [{'elanguage': 0, 'supported': True}],
         'assets': {'asset_url_format': f'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{APPID}/${{FILENAME}}',

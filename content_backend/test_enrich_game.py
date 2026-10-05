@@ -21,6 +21,10 @@ except ImportError:
     sys.modules.setdefault("opencc", types.SimpleNamespace(OpenCC=_DummyOpenCC))
 
 from enrich_game import build_record, upsert_document, upsert_sharded, valid_date
+from steam_player_modes import BROWSE_SOURCE
+
+VERIFIED_CATEGORIES = {'categories': [{'id': 2, 'description': 'Single-player'}],
+                       'categories_source': BROWSE_SOURCE, 'categories_checked_at': '2026-10-02T08:00:00Z'}
 
 
 class EnrichmentTests(unittest.TestCase):
@@ -36,6 +40,8 @@ class EnrichmentTests(unittest.TestCase):
         }
         english = {
             "appid": 123,
+            "success": 1,
+            "categories": {"supported_player_categoryids": [2, 9]},
             "name": "Example",
             "release": release,
             "supported_languages": [{"elanguage": 0, "supported": True}],
@@ -69,6 +75,8 @@ class EnrichmentTests(unittest.TestCase):
         )
         self.assertTrue(row["release_date_conflict"])
         self.assertIsNone(row["release_date_verified_at"])
+        self.assertEqual([x['id'] for x in row['categories']], [2, 9])
+        self.assertEqual(row['categories_source'], BROWSE_SOURCE)
 
     def test_upsert_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -210,7 +218,7 @@ class CompletenessTests(unittest.TestCase):
     def test_existing_header_does_not_hide_missing_tags_or_languages(self):
         from reconcile_catalog import metadata_gaps
         source = {'appid': 123, 'followers': 5000, 'release_start': '2026-10-20'}
-        row = {**source, 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked', 'tag_labels_language':'zh-TW', 'genre_labels_language':'zh-TW'}
+        row = {**source, **VERIFIED_CATEGORIES, 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked', 'tag_labels_language':'zh-TW', 'genre_labels_language':'zh-TW'}
         self.assertEqual(metadata_gaps(row, source), ['languages', 'tags'])
         row.update(language_support={'english': True}, tags=[], tags_fetch_status='ok')
         self.assertEqual(metadata_gaps(row, source), [])
@@ -280,7 +288,7 @@ class CompletenessTests(unittest.TestCase):
                      'release_display_precision': 'date_full'} for aid in (123, 456)]
             master = root/'master.json'
             master.write_text(json.dumps({'games': rows}))
-            enriched = {**rows[1], 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked', 'tag_labels_language':'zh-TW', 'genre_labels_language':'zh-TW',
+            enriched = {**rows[1], **VERIFIED_CATEGORIES, 'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked', 'tag_labels_language':'zh-TW', 'genre_labels_language':'zh-TW',
                         'language_support': {'english': True}, 'tags': ['Action'], 'tags_fetch_status': 'ok'}
             with patch('reconcile_catalog.build_record', side_effect=[RuntimeError('temporarily unavailable'), enriched]):
                 status = reconcile(master, data, 60)
@@ -332,7 +340,7 @@ class CompletenessTests(unittest.TestCase):
             (data/'excluded_appids.json').write_text('{"appids": []}')
             old = {'appid': 123, 'followers': 7000, 'release_start': '2030-01-01',
                    'release_display_precision': 'date_full', 'release_date_verified_at': '2026-09-27T00:00:00Z'}
-            current = {**old, 'release_start': '2030-01-02', 'release_date_verified_at': '2026-09-28T00:00:00Z',
+            current = {**old, **VERIFIED_CATEGORIES, 'release_start': '2030-01-02', 'release_date_verified_at': '2026-09-28T00:00:00Z',
                        'header_image': 'known', 'artwork_checked_at': 'checked', 'description_checked_at': 'checked', 'tag_labels_language':'zh-TW', 'genre_labels_language':'zh-TW',
                        'language_support': {'english': True}, 'tags': ['Action'], 'tags_fetch_status': 'ok'}
             upsert_sharded(data, current, current['release_start'])

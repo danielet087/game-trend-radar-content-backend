@@ -14,10 +14,12 @@ from pathlib import Path
 
 import requests
 from public_catalog import keep_newer_release
+from steam_player_modes import has_verified_categories
 from twitch_steam_admission import aware_time, is_twitch_qualified, normalize_twitch_admission
 from enrich_game import (
     SteamRateLimit, TAIPEI, _shard_in_sync, _rebuild_small_indexes, _write_json, build_record,
     excluded_public_appids, upsert_sharded, utc_now, valid_date,
+    refresh_player_categories,
 )
 
 
@@ -60,6 +62,8 @@ def metadata_gaps(record: dict | None, source: dict) -> list[str]:
         gaps.append('genres_zh_tw')
     if not record.get('description_checked_at'):
         gaps.append('description_unchecked')
+    if not has_verified_categories(record):
+        gaps.append('categories')
     return gaps
 
 
@@ -116,9 +120,14 @@ def reconcile(master_path: Path, data_dir: Path, max_enrich: int,
             cached_path = cache_dir / f'{appid}.json' if cache_dir else None
             cached = read_json(cached_path) if cached_path else None
             try:
-                if ('release_date_diagnostics' not in gaps and cached
+                if gaps == ['categories']:
+                    # Player-mode backfill uses the existing bounded content
+                    # queue and preserves every accepted date/Followers field.
+                    enriched = {**record, **refresh_player_categories(session, appid)}
+                elif ('release_date_diagnostics' not in gaps and cached
                         and cached.get('signature') == signature
-                        and cached.get('record', {}).get('content_enrichment_version', 0) >= 4):
+                        and cached.get('record', {}).get('content_enrichment_version', 0) >= 5
+                        and has_verified_categories(cached.get('record', {}))):
                     enriched = cached['record']
                 else:
                     enriched = build_record(session, appid=appid, followers=int(source['followers']),

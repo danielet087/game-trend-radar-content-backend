@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from twitch_steam_admission import preserve_twitch_admission
+from steam_player_modes import preserve_player_categories
 
 RELEASE_FIELDS = (
     'release_raw', 'release_start', 'release_end', 'release_precision',
@@ -23,7 +24,7 @@ def keep_newer_release(existing: dict, incoming: dict) -> dict:
             return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
         except (ValueError, TypeError):
             return datetime.min.replace(tzinfo=timezone.utc)
-    result = preserve_twitch_admission(existing, incoming)
+    result = preserve_player_categories(existing, preserve_twitch_admission(existing, incoming))
     # Admission is an independent source. Ordinary metadata refreshes cannot
     # erase a verified Twitch discovery, including when Followers remain low.
     if existing.get('release_display_precision') == 'date_full' and checked_at(existing) > checked_at(incoming):
@@ -49,6 +50,7 @@ FIELDS = (
     'release_timestamp_taipei_date', 'content_descriptorids',
     'release_store_date', 'release_date_normalization',
     'release_display_provider', 'release_date_verified_at',
+    'categories', 'categories_source', 'categories_checked_at',
 )
 
 
