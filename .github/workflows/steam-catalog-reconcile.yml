@@ -27,7 +27,9 @@ jobs:
         with:
           sparse-checkout: |
             content_backend/
+            requirements-core.txt
             .github/workflows/steam-content-enrichment-dispatch.yml
+            .github/workflows/steam-catalog-reconcile.yml
           sparse-checkout-cone-mode: false
       - uses: actions/setup-python@v5
         with:

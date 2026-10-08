@@ -48,9 +48,19 @@ jobs:
         with:
           sparse-checkout: |
             content_backend/
+            requirements-core.txt
             .github/workflows/steam-content-enrichment-dispatch.yml
+            .github/workflows/steam-catalog-reconcile.yml
           sparse-checkout-cone-mode: false
           persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install content backend dependencies
+        run: python -m pip install --disable-pip-version-check -r content_backend/requirements.txt
 
       - name: Validate qualified-game event
         run: |
@@ -82,14 +92,8 @@ jobs:
           print("CONTENT_EVENT_VALID", appid, followers, release, "twitch_source", proof is not None)
           PY
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install content backend dependencies and run offline tests
+      - name: Run offline content tests
         run: |
-          python -m pip install --disable-pip-version-check -r content_backend/requirements.txt
           python -m py_compile content_backend/enrich_game.py
           PYTHONPATH=content_backend python -m unittest discover -s content_backend -p "test_*.py" -q
 

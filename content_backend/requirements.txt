@@ -1,2 +1,3 @@
+-r ../requirements-core.txt
 requests>=2.32,<3
 opencc-python-reimplemented>=0.1.7,<1
