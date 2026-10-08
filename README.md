@@ -61,6 +61,10 @@ python content_backend/localize_descriptions.py --data-dir /path/to/frontend/dat
 
 上述檔案在同一 commit 發布。比對完整欄位，不能只比筆數或事件 signature。發布衝突時重新合併最新前端；已抓取的成功內容保存在 runner 暫存，重試發布時不再次呼叫 Steam。較舊官方事件不能覆蓋較新已公開的 Followers／日期。
 
+發布由 `radar_backend.jobs.publish_content` 組裝固定版本 `radar_core.publication` 共用 adapter。單款最多 12 次、對帳最多 8 次；對帳的來源收集和失敗冷卻只執行一次。`data/publication/steam_content.json` 與 catalog 同 commit 保存來源及實際資料版本，push 確認後才另產生包含真實 Git commit 的 artifact 收據。空 diff 同樣需要 remote 確認；未確認會失敗，partial 批次仍如實回報 partial。
+
+發布前先嚴格檢查既有 JSON；損壞檔案不會被當成空資料覆蓋。AppID、月份、清單、index、legacy 及 v3 browser catalog 的內容必須一致。架構細節見 [backend-architecture.md](docs/backend-architecture.md)。
+
 `public_catalog.py` 的欄位投影與主後端同名模組同步維護。
 
 ## 驗證
