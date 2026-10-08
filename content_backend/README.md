@@ -52,3 +52,7 @@ Required payload:
 
 A future physical split into a dedicated repository only requires moving this
 directory and its workflow, then changing Backend A's dispatch target.
+
+## 分層架構
+
+內容補充與對帳的 domain、application、HTTP adapter、JSON state、publication 及 job 已放入 `radar_backend/`。舊 CLI 與函數入口維持相容。責任分配、執行方式及保留債務見 [後端架構說明](../docs/backend-architecture.md)。
