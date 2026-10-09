@@ -2,14 +2,14 @@
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from localized_descriptions import merge_description_fields
-from steam_taxonomy import preserve_taxonomy
-from steam_player_modes import has_verified_categories
+from radar_backend.adapters.localized_descriptions import merge_description_fields
+from radar_backend.adapters.steam_taxonomy import preserve_taxonomy
+from radar_backend.adapters.player_categories import has_verified_categories
 from radar_core.domain.twitch_admission import is_twitch_qualified
 from radar_backend.domain.content import TAIPEI, valid_date
-from radar_backend.domain.release import keep_newer_release
+from radar_backend.adapters.catalog_rules import keep_newer_release
 from radar_backend.state.json_documents import load_json, write_json as _write_json
-from public_catalog import write_catalog_projection
+from radar_backend.adapters.catalog_projection import write_catalog_projection
 
 
 def utc_now() -> str:

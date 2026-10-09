@@ -1,4 +1,4 @@
-"""Traditional Chinese descriptions, with explicit origin and versioned translations."""
+"""Compose description rules, OpenCC, and the editorial document cache."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def is_chinese(value: str) -> bool:
 @lru_cache(maxsize=1)
 def translations() -> dict:
     return _state.read_translations(
-        json.loads, Path(__file__).with_name("descriptions_zh_tw.json")
+        json.loads, Path(__file__).resolve().parents[2] / "descriptions_zh_tw.json"
     )
 
 
@@ -54,5 +54,4 @@ def description_fields(
 
 
 def merge_description_fields(existing: dict, incoming: dict) -> dict:
-    """Keep locale and text atomic; explicit unavailable results clear stale text."""
     return _domain.merge_description_fields(existing, incoming)

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
-from steam_player_modes import category_fields
+from radar_backend.domain.player_categories import category_fields
 from radar_core.domain.twitch_admission import (
     TW_STORE_DATE_AUTHORITY, TW_STORE_DATE_PROVIDER, is_twitch_qualified,
     normalize_twitch_admission, resolve_store_release_day,

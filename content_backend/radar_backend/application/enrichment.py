@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
-from steam_player_modes import category_fields
+from radar_backend.domain.player_categories import category_fields
 from radar_backend.domain.content import (
     ContentSnapshot, record_from_snapshot, taxonomy_fields,
     validate_enrichment_input, validate_store_snapshot,

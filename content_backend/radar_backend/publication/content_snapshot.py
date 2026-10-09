@@ -11,12 +11,12 @@ import subprocess
 
 from radar_core.domain.twitch_admission import aware_time, is_twitch_qualified
 from radar_core.publication import snapshot_revision
-from radar_backend.domain.catalog import metadata_gaps, qualified_source
+from radar_backend.adapters.catalog_rules import metadata_gaps, keep_newer_release
+from radar_backend.domain.catalog import qualified_source
 from radar_backend.domain.content import TAIPEI, valid_date
-from radar_backend.domain.release import keep_newer_release
 from radar_backend.publication import catalog
 from radar_backend.state.json_documents import write_json
-from public_catalog import FIELDS
+from radar_backend.domain.catalog_projection import FIELDS
 
 OWNED_PATHS = (
     "data/games/", "data/calendar/", "data/lists/", "data/index.json",

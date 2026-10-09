@@ -12,8 +12,8 @@ from pathlib import Path
 
 import requests
 
-from enrich_game import STORE_BROWSE, request_json, upsert_sharded, utc_now
-from localized_descriptions import description_fields
+from radar_backend.adapters.content_helpers import STORE_BROWSE, request_json, upsert_sharded, utc_now
+from radar_backend.adapters.localized_descriptions import description_fields
 
 
 def fetch_locales(appids: list[int], cache_dir: Path | None = None) -> dict:
