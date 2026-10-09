@@ -15,7 +15,7 @@ from public_catalog import write_catalog_projection
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-def _update_month_file(data_dir: Path, month: str, appid: int, record: dict | None) -> None:
+def _update_month_file(data_dir: Path, month: str, appid: int, record: dict | None, *, generated_at: str | None = None) -> None:
     path = data_dir / "calendar" / f"{month}.json"
     doc = {"version": 2, "month": month, "games": []}
     if path.exists():
@@ -39,7 +39,7 @@ def _update_month_file(data_dir: Path, month: str, appid: int, record: dict | No
     if games:
         doc.update({
             "version": 2,
-            "generated_at": utc_now(),
+            "generated_at": generated_at or utc_now(),
             "month": month,
             "count": len(games),
             "games": games,
@@ -49,7 +49,7 @@ def _update_month_file(data_dir: Path, month: str, appid: int, record: dict | No
         path.unlink()
 
 
-def _rebuild_small_indexes(data_dir: Path) -> None:
+def _rebuild_small_indexes(data_dir: Path, *, generated_at: str | None = None, now: datetime | None = None) -> None:
     rows = []
     games_dir = data_dir / "games"
     for path in games_dir.glob("*.json"):
@@ -75,8 +75,8 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
         int(g.get("appid", 0)),
     ))
     months = sorted({str(row["release_start"])[:7] for row in rows})
-    now = utc_now()
-    today = datetime.now(TAIPEI).date()
+    timestamp = generated_at or utc_now()
+    today = (now or datetime.now(TAIPEI)).astimezone(TAIPEI).date()
     today_s = today.isoformat()
     released_from = (today - timedelta(days=30)).isoformat()
 
@@ -102,10 +102,10 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
         prior_index = load_json(data_dir / "index.json")
     except (OSError, ValueError, TypeError):
         prior_index = {}
-    projection = write_catalog_projection(data_dir, rows, now)
+    projection = write_catalog_projection(data_dir, rows, timestamp)
     _write_json(data_dir / "index.json", {
         "version": 2,
-        "generated_at": now,
+        "generated_at": timestamp,
         "source": "Steam AppID-sharded public catalog",
         "game_count": len(rows),
         "months": months,
@@ -120,22 +120,22 @@ def _rebuild_small_indexes(data_dir: Path) -> None:
         **projection,
     })
     _write_json(data_dir / "lists" / "upcoming.json", {
-        "version": 2, "generated_at": now,
+        "version": 2, "generated_at": timestamp,
         "count": len(upcoming), "appids": upcoming,
     })
     _write_json(data_dir / "lists" / "released.json", {
-        "version": 2, "generated_at": now,
+        "version": 2, "generated_at": timestamp,
         "count": len(released), "appids": released,
     })
     # Legacy readers must see exactly the same catalog as the sharded index.
     # Preserve released titles; do not derive this file from only upcoming AppIDs.
     _write_json(data_dir / "steam_upcoming.json", {
-        "version": 2, "generated_at": now,
+        "version": 2, "generated_at": timestamp,
         "count": len(rows), "games": rows,
     })
 
 
-def _shard_in_sync(data_dir: Path, record: dict) -> bool:
+def _shard_in_sync(data_dir: Path, record: dict, *, now: datetime | None = None) -> bool:
     """Existing AppID is not published until its month, indexes and fallback agree."""
     appid = int(record["appid"])
     release = str(record["release_start"])
@@ -147,7 +147,7 @@ def _shard_in_sync(data_dir: Path, record: dict) -> bool:
         released = load_json(data_dir / "lists" / "released.json")
         row = next(x for x in month["games"] if int(x["appid"]) == appid)
         fallback = next(x for x in legacy["games"] if int(x["appid"]) == appid)
-        today = datetime.now(TAIPEI).date()
+        today = (now or datetime.now(TAIPEI)).astimezone(TAIPEI).date()
         day = datetime.fromisoformat(release).date()
         expected_upcoming = day >= today and (int(record["followers"]) >= 5000 or is_twitch_qualified(record))
         expected_released = (
@@ -187,6 +187,8 @@ def upsert_sharded(
     event_release_date: str,
     *,
     force: bool = False,
+    generated_at: str | None = None,
+    now: datetime | None = None,
 ) -> bool:
     """Update one AppID file and only the affected calendar shard."""
     appid = int(record["appid"])
@@ -226,13 +228,13 @@ def upsert_sharded(
             has_verified_categories(existing) and existing['categories'] == record['categories']))
     )
     if already and not force:
-        if _shard_in_sync(data_dir, existing):
+        if _shard_in_sync(data_dir, existing, now=now):
             return False
         # A previous push may have published only the AppID file, or an
         # optimistic retry may have reset tracked indexes but kept an
         # untracked AppID. Repair indexes without another Steam request.
-        _update_month_file(data_dir, str(existing["release_start"])[:7], appid, existing)
-        _rebuild_small_indexes(data_dir)
+        _update_month_file(data_dir, str(existing["release_start"])[:7], appid, existing, generated_at=generated_at)
+        _rebuild_small_indexes(data_dir, generated_at=generated_at, now=now)
         return True
 
     merged = preserve_taxonomy(existing, merge_description_fields(existing, record))
@@ -249,7 +251,7 @@ def upsert_sharded(
             continue
         month_doc = load_json(month_path)
         if any(int(row.get("appid", -1)) == appid for row in month_doc.get("games", [])):
-            _update_month_file(data_dir, month_path.stem, appid, None)
-    _update_month_file(data_dir, new_month, appid, merged)
-    _rebuild_small_indexes(data_dir)
+            _update_month_file(data_dir, month_path.stem, appid, None, generated_at=generated_at)
+    _update_month_file(data_dir, new_month, appid, merged, generated_at=generated_at)
+    _rebuild_small_indexes(data_dir, generated_at=generated_at, now=now)
     return True

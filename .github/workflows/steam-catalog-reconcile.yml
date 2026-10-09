@@ -52,46 +52,67 @@ jobs:
           git -C frontend config user.name "github-actions[bot]"
           git -C frontend config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Repair and publish all locally repairable missing indexes
+      - name: Validate catalog and authoritative source before collection
+        run: |
+          PYTHONPATH=content_backend python -m radar_backend.jobs.publish_content validate \
+            --frontend frontend --master backend/data/steam_upcoming_master.json
+
+      - name: Collect bounded missing content once
+        run: |
+          PYTHONPATH=content_backend python -u content_backend/reconcile_catalog.py \
+            --master backend/data/steam_upcoming_master.json \
+            --data-dir frontend/data --max-enrich 60 --max-seconds 2400 \
+            --cache-dir "$RUNNER_TEMP/steam-content-cache"
+
+      - name: Freeze validated reconciliation batch
+        run: |
+          PYTHONPATH=content_backend python -m radar_backend.jobs.publish_content freeze-reconciliation \
+            --frontend frontend --master backend/data/steam_upcoming_master.json \
+            --source-revision "$(git -C backend rev-parse HEAD)" \
+            --output "$RUNNER_TEMP/steam-content-batch.json"
+
+      - name: Publish frozen reconciliation against latest frontend
         env:
           GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
         run: |
-          set -euo pipefail
-          for attempt in $(seq 1 8); do
-            git -C frontend fetch origin main
-            git -C frontend reset --hard origin/main
-            git -C frontend clean -fd -- data/games data/calendar data/lists
-            PYTHONPATH=content_backend python -u content_backend/reconcile_catalog.py \
-              --master backend/data/steam_upcoming_master.json \
-              --data-dir frontend/data --max-enrich 60 --max-seconds 2400 \
-              --cache-dir "$RUNNER_TEMP/steam-content-cache"
-            git -C frontend add data/games data/calendar data/index.json data/lists data/steam_upcoming.json data/catalog.json data/content_refresh_status.json
-            if git -C frontend diff --cached --quiet; then
-              echo "STEAM_RECONCILE_ALREADY_CURRENT"
-              exit 0
-            fi
-            git -C frontend commit -m "data: reconcile qualified Steam catalog [skip ci]"
-            if git -C frontend push origin HEAD:main; then
-              echo "STEAM_RECONCILE_PUBLISHED"
-              exit 0
-            fi
-            echo "::warning::Concurrent frontend publication; retrying against latest main ($attempt/8)"
-            sleep $((attempt * 3))
-          done
-          echo "::error::Reconciliation could not publish after eight conflict-safe attempts"
-          exit 1
+          PYTHONPATH=content_backend python -m radar_backend.jobs.publish_content publish \
+            --frontend frontend --frozen "$RUNNER_TEMP/steam-content-batch.json" \
+            --receipt "$RUNNER_TEMP/steam-content-publication.json" \
+            --target-slot "${{ inputs.target_slot }}"
 
-      - name: Report actual content completeness
+      - name: Preserve publication receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-catalog-publication-${{ github.run_id }}
+          path: ${{ runner.temp }}/steam-content-publication.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Report acknowledged publication and content completeness
         if: always()
         run: |
           python - <<'PYREPORT'
           import json, os
           from pathlib import Path
-          p = Path("frontend/data/content_refresh_status.json")
-          if p.exists():
-              r = json.loads(p.read_text())
-              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
-                  out.write(f"\n## Steam 內容對帳\n- 公開遊戲：{r['public_count']}\n- 本輪嘗試：{r['attempted']}\n- 補充成功：{r['enriched']}\n- 仍待補齊：{r['pending_count']}\n- 全部完成：{r['complete']}\n- 待補繁中翻譯：{r.get('description_translation_pending_count', 0)}\n")
-                  for aid, gaps in r['pending_enrichment'].items():
+          receipt_path = Path(os.environ["RUNNER_TEMP"]) / "steam-content-publication.json"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("\n## Steam 內容對帳\n")
+              if not receipt_path.is_file():
+                  out.write("- 發布：尚未收到本輪發布確認\n")
+                  raise SystemExit(0)
+              from radar_core.jobs import JobResult
+              from radar_core.publication import PublicationReceipt
+              report = json.loads(receipt_path.read_text(encoding="utf-8"))
+              job = JobResult.from_dict(report["job_result"])
+              receipt = PublicationReceipt.from_dict(report["publication_receipt"]) if "publication_receipt" in report else None
+              acknowledged = receipt is not None and job.published
+              out.write(f"- 發布：{'已確認' if acknowledged else '尚未確認'}\n- 工作狀態：{job.status.value}\n- 本輪完整成功：{job.successful}\n")
+              if receipt:
+                  out.write(f"- 公開版本：`{receipt.published_revision}`\n")
+              r = report.get("content_result") or {}
+              if r:
+                  out.write(f"- 公開遊戲：{r.get('public_count', 0)}\n- 本輪嘗試：{r.get('attempted', 0)}\n- 補充成功：{r.get('enriched', 0)}\n- 仍待補齊：{r.get('pending_count', 0)}\n- 收集完整：{job.collection_complete}\n- 待補繁中翻譯：{r.get('description_translation_pending_count', 0)}\n")
+                  for aid, gaps in (r.get('pending_enrichment') or {}).items():
                       out.write(f"- AppID {aid}: {', '.join(gaps)}\n")
           PYREPORT
