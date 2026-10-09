@@ -4,7 +4,7 @@ import json
 import logging
 import time
 import requests
-from steam_taxonomy import TAG_LIST, parse_store_taxonomy
+from radar_backend.adapters.steam_taxonomy import TAG_LIST, parse_store_taxonomy
 from radar_backend.domain.content import STORE_BROWSE, APPDETAILS, STORE_PAGE
 
 LOG = logging.getLogger(__name__)

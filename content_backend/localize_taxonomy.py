@@ -8,7 +8,7 @@ from pathlib import Path
 
 import requests
 
-from enrich_game import SteamRateLimit, fetch_store_taxonomy, taxonomy_fields, upsert_sharded, utc_now
+from radar_backend.adapters.content_helpers import SteamRateLimit, fetch_store_taxonomy, taxonomy_fields, upsert_sharded, utc_now
 
 
 def localize(data_dir: Path, cache_dir: Path | None = None) -> dict:

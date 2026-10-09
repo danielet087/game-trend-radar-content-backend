@@ -1,4 +1,4 @@
-"""Compatibility facade for pure Steam taxonomy rules."""
+"""Public facade for pure Steam taxonomy rules."""
 
 from __future__ import annotations
 

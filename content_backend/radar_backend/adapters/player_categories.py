@@ -1,4 +1,4 @@
-"""Compatibility facade for official Steam player-category evidence."""
+"""Runtime clock wiring for official Steam player-category evidence."""
 
 from datetime import datetime, timedelta, timezone
 from radar_backend.domain import player_categories as _rules
