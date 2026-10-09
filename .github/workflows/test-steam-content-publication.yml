@@ -3,8 +3,14 @@ on:
   push:
     paths:
       - "content_backend/**"
+      - "requirements-core.txt"
       - ".github/workflows/steam-content-enrichment-dispatch.yml"
       - ".github/workflows/test-steam-content-publication.yml"
+  pull_request:
+    paths:
+      - "content_backend/**"
+      - "requirements-core.txt"
+      - ".github/workflows/**"
   workflow_dispatch:
 permissions:
   contents: read
