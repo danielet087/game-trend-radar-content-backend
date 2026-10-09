@@ -1,8 +1,12 @@
-"""Store browser projections while preserving same-revision no-op writes."""
+"""Store browser projections while preserving already coherent no-op writes."""
 
 from pathlib import Path
 
-from radar_backend.domain.catalog_projection import catalog_payload, catalog_revision
+from radar_backend.domain.catalog_projection import (
+    catalog_matches,
+    catalog_payload,
+    catalog_revision,
+)
 
 
 def write_catalog_projection(
@@ -19,9 +23,8 @@ def write_catalog_projection(
     payload = catalog_payload(rows, generated_at, revision, fields=fields)
     if path.exists():
         try:
-            if (
-                json_codec.loads(path.read_text(encoding="utf-8")).get("revision")
-                == revision
+            if catalog_matches(
+                json_codec.loads(path.read_text(encoding="utf-8")), payload
             ):
                 return {"catalog_path": "catalog.json", "catalog_revision": revision}
         except (OSError, ValueError, TypeError):

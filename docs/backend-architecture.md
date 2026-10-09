@@ -83,8 +83,16 @@ Catalog revision 仍由所有 accepted rows 的 canonical JSON 計算 SHA-256 �
 
 本批接續 Content 第三批 PR #3，其他後端相依 PR 順序保持。三個 workflows、non-cone sparse patterns、Secrets、requirements、Core 0.2.0 immutable SHA `bf1d4bc64b361ec35cd4041d78c5016396d5d785` 與翻譯 JSON 均不變。驗證涵蓋舊／新 helper APIs、完整 canonical enrichment → JSON projection、兩個 metadata-only 維護工具、阻擋舊入口的正式 import graph、時鐘邊界、原 source oracle、乾淨 tracked checkout、實際 sparse checkout 與本機 bare Git 發布。
 
-## 剩餘驗收範圍
+## 完成範圍
 
-原四個 consumer（Steam、Twitch、Content、前端 Python／Core 接線）已完成規劃內的分層拆分，下一批做跨 consumer 總驗收，預留一次修正，預估再 1～2 次。前端 UI 已於先前完成；IGDB 獨立後端與全面重寫退役工具另列範圍。
+原四個 consumer（Steam、Twitch、Content、前端 Python／Core 接線）已完成規劃內的分層拆分，第十七批完成跨 consumer 總驗收與實際發現修正。前端 UI 已於先前完成；IGDB 獨立後端與全面重寫退役工具另列範圍。
 
 Publication 的 shard 掃描與 state 的 JSON 存取屬外層發布／保存責任；保留既有檔案格式與順序，不為本次分層引入新的通用 filesystem repository。
+
+## 第十七批：同 revision 投影一致性
+
+跨 producer 驗收重現一個既有問題：Steam 保留 accepted record 中的 `official_ge5000`／`content_descriptorids`，但其 browser projection 沒有這兩個欄位。Steam 只更新量測時間後，與 Content 使用相同完整 rows hash；Content 原本只比 revision 就略過投影，`_shard_in_sync` 也未驗證 browser catalog，造成普通 no-force 事件無法修復，後續 freeze 的嚴格驗證失敗。
+
+本批新增純 `catalog_matches`，核對 version、count、revision、完整 games 與 JSON 值型別；generated_at 不參與 no-op 判定，合法相同輸出保持原 bytes／mtime。State writer 在同 revision 但實際 payload 不符時重寫；`_shard_in_sync` 同時檢查全投影、index revision 與 path，讓原既有修復分支恢復一致資料。不重新查 HTTP，不修改 accepted shard 或更新資格證據；兩個 producer 的 FIELDS、完整 rows hash、v3 schema、JSON 格式與 strict gate 保持。
+
+新增七項真回歸與更正一項原先只信任 revision 的錯誤測試政策；修後完整 suite 為 348 項。跨 consumer 真 Steam timestamp-only refresh → Content no-force repair → freeze → 本機 bare Git publish → 重複 no-op 已通過，並核對原 shard bytes、hash 與觀測時間保持。其他凍結、Git 有限重試、partial／superseded 與成功收據控制內容不變。驗收與相依 PR 合併順序記錄於 Steam repository 的 `docs/backend-acceptance.md`。

@@ -10,6 +10,9 @@ from radar_backend.domain.content import TAIPEI, valid_date
 from radar_backend.adapters.catalog_rules import keep_newer_release
 from radar_backend.state.json_documents import load_json, write_json as _write_json
 from radar_backend.adapters.catalog_projection import write_catalog_projection
+from radar_backend.domain.catalog_projection import (
+    catalog_matches, catalog_payload, catalog_revision,
+)
 
 
 def utc_now() -> str:
@@ -145,6 +148,7 @@ def _shard_in_sync(data_dir: Path, record: dict, *, now: datetime | None = None)
         legacy = load_json(data_dir / "steam_upcoming.json")
         upcoming = load_json(data_dir / "lists" / "upcoming.json")
         released = load_json(data_dir / "lists" / "released.json")
+        projection = load_json(data_dir / "catalog.json")
         row = next(x for x in month["games"] if int(x["appid"]) == appid)
         fallback = next(x for x in legacy["games"] if int(x["appid"]) == appid)
         today = (now or datetime.now(TAIPEI)).astimezone(TAIPEI).date()
@@ -165,6 +169,11 @@ def _shard_in_sync(data_dir: Path, record: dict, *, now: datetime | None = None)
             and int(month["count"]) == len(month["games"])
             and (appid in upcoming["appids"]) == expected_upcoming
             and (appid in released["appids"]) == expected_released
+            and catalog_matches(projection, catalog_payload(
+                legacy["games"], "", catalog_revision(legacy["games"])
+            ))
+            and index.get("catalog_revision") == projection["revision"]
+            and index.get("catalog_path") == "catalog.json"
         )
     except (OSError, ValueError, TypeError, KeyError, StopIteration):
         return False
