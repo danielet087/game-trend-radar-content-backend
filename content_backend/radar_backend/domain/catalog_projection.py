@@ -72,3 +72,33 @@ def catalog_payload(
         "count": len(rows),
         "games": [{key: row[key] for key in fields if key in row} for row in rows],
     }
+
+
+def _same_json_value(actual, expected) -> bool:
+    """Compare JSON values without treating booleans as integer evidence."""
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _same_json_value(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _same_json_value(left, right) for left, right in zip(actual, expected)
+        )
+    return actual == expected or (
+        isinstance(expected, float) and actual != actual and expected != expected
+    )
+
+
+def catalog_matches(actual: dict, expected: dict) -> bool:
+    """Match the browser contract; an old generated_at is valid for a no-op."""
+    return (
+        type(actual.get("version")) is int
+        and actual["version"] == expected["version"]
+        and type(actual.get("count")) is int
+        and actual["count"] == expected["count"]
+        and type(actual.get("revision")) is str
+        and actual["revision"] == expected["revision"]
+        and _same_json_value(actual.get("games"), expected["games"])
+    )

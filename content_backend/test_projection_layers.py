@@ -198,7 +198,7 @@ class ProjectionStorageTests(unittest.TestCase):
                 rules.catalog_revision(rows),
             )
 
-    def test_matching_revision_alone_keeps_legacy_noop_without_repair(self):
+    def test_matching_revision_alone_repairs_inconsistent_browser_payload(self):
         rows = [{"appid": 7}]
         self.data.mkdir(parents=True)
         path = self.data / "catalog.json"
@@ -207,7 +207,10 @@ class ProjectionStorageTests(unittest.TestCase):
         )
         path.write_text(original)
         self.write(rows)
-        self.assertEqual(path.read_text(), original)
+        self.assertEqual(
+            json.loads(path.read_text()),
+            rules.catalog_payload(rows, "clock", rules.catalog_revision(rows)),
+        )
 
     def test_hidden_metadata_change_rewrites_same_projected_rows(self):
         first = self.write([{"appid": 7, "private": 1}], "first")
