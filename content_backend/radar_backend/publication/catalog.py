@@ -5,8 +5,9 @@ from pathlib import Path
 from radar_backend.adapters.localized_descriptions import merge_description_fields
 from radar_backend.adapters.steam_taxonomy import preserve_taxonomy
 from radar_backend.adapters.player_categories import has_verified_categories
-from radar_core.domain.twitch_admission import is_twitch_qualified
+from radar_core.domain.twitch_admission import is_twitch_qualified, aware_time
 from radar_backend.domain.content import TAIPEI, valid_date
+from radar_backend.domain.catalog import official_followers_at_least, follower_sort_count, project_follower_evidence
 from radar_backend.adapters.catalog_rules import keep_newer_release
 from radar_backend.state.json_documents import load_json, write_json as _write_json
 from radar_backend.adapters.catalog_projection import write_catalog_projection
@@ -36,7 +37,8 @@ def _update_month_file(data_dir: Path, month: str, appid: int, record: dict | No
         games.append(record)
     games.sort(key=lambda g: (
         str(g.get("release_start") or "9999-12-31"),
-        -int(g.get("followers") or 0),
+        g.get("followers") is None,
+        -follower_sort_count(g),
         int(g.get("appid", 0)),
     ))
     if games:
@@ -64,17 +66,17 @@ def _rebuild_small_indexes(data_dir: Path, *, generated_at: str | None = None, n
             continue
         try:
             appid = int(row.get("appid"))
-            followers = int(row.get("followers"))
         except (TypeError, ValueError):
             continue
         release = row.get("release_start")
-        if appid <= 0 or (followers < 3000 and not is_twitch_qualified(row)) or not valid_date(release):
+        if appid <= 0 or (not official_followers_at_least(row, 3000) and not is_twitch_qualified(row)) or not valid_date(release):
             continue
         rows.append(row)
 
     rows.sort(key=lambda g: (
         str(g.get("release_start") or "9999-12-31"),
-        -int(g.get("followers") or 0),
+        g.get("followers") is None,
+        -follower_sort_count(g),
         int(g.get("appid", 0)),
     ))
     months = sorted({str(row["release_start"])[:7] for row in rows})
@@ -85,16 +87,16 @@ def _rebuild_small_indexes(data_dir: Path, *, generated_at: str | None = None, n
 
     upcoming = [
         int(row["appid"]) for row in rows
-        if row["release_start"] >= today_s and (int(row["followers"]) >= 5000 or is_twitch_qualified(row))
+        if row["release_start"] >= today_s and (official_followers_at_least(row, 5000) or is_twitch_qualified(row))
     ]
     released = [
         int(row["appid"]) for row in rows
         if released_from <= row["release_start"] < today_s
         and (
-            int(row["followers"]) >= 5000
+            official_followers_at_least(row, 5000)
             or is_twitch_qualified(row)
             or (
-                int(row["followers"]) > 3000
+                official_followers_at_least(row, 3001)
                 and row.get("recent_source") in {"tracked_release", "direct_release"}
             )
         )
@@ -153,11 +155,11 @@ def _shard_in_sync(data_dir: Path, record: dict, *, now: datetime | None = None)
         fallback = next(x for x in legacy["games"] if int(x["appid"]) == appid)
         today = (now or datetime.now(TAIPEI)).astimezone(TAIPEI).date()
         day = datetime.fromisoformat(release).date()
-        expected_upcoming = day >= today and (int(record["followers"]) >= 5000 or is_twitch_qualified(record))
+        expected_upcoming = day >= today and (official_followers_at_least(record, 5000) or is_twitch_qualified(record))
         expected_released = (
             today - timedelta(days=30) <= day < today
-            and (int(record["followers"]) >= 5000 or is_twitch_qualified(record) or (
-                int(record["followers"]) > 3000
+            and (official_followers_at_least(record, 5000) or is_twitch_qualified(record) or (
+                official_followers_at_least(record, 3001)
                 and record.get("recent_source") in {"tracked_release", "direct_release"}
             ))
         )
@@ -214,7 +216,7 @@ def upsert_sharded(
             existing = {}
 
     record = keep_newer_release(existing, record)
-    if 'twitch_admission' in record and not is_twitch_qualified(record):
+    if ('twitch_admission' in record or record.get('followers') is None) and not is_twitch_qualified(record):
         raise RuntimeError(f'AppID {appid} has an invalid Twitch-source Steam qualification')
     # An older queued event must not roll back a more recent official result.
     try:
@@ -224,6 +226,11 @@ def upsert_sharded(
             raise RuntimeError(f"Stale official event for AppID {appid}; preserving newer public data")
     except (ValueError, TypeError):
         pass
+    if existing.get("followers") is None and record.get("followers") is None:
+        old_unavailable = aware_time(existing.get("follower_unavailable_at"))
+        new_unavailable = aware_time(record.get("follower_unavailable_at"))
+        if old_unavailable is not None and new_unavailable is not None and new_unavailable < old_unavailable:
+            raise RuntimeError(f"Stale unavailable Followers event for AppID {appid}; preserving newer public data")
 
     signature = f"{appid}:{record['followers']}:{record['release_start']}"
     already = (
@@ -231,8 +238,9 @@ def upsert_sharded(
         and existing.get("header_image")
         and isinstance(existing.get("language_support"), dict)
         and isinstance(existing.get("tags"), list)
-        and (int(existing.get("followers", 0)) >= 5000 or is_twitch_qualified(existing))
+        and (official_followers_at_least(existing, 5000) or is_twitch_qualified(existing))
         and existing.get('twitch_admission') == record.get('twitch_admission')
+        and all(existing.get(key) == record.get(key) for key in ("follower_status", "follower_unavailable_at"))
         and (not has_verified_categories(record) or (
             has_verified_categories(existing) and existing['categories'] == record['categories']))
     )
@@ -246,7 +254,7 @@ def upsert_sharded(
         _rebuild_small_indexes(data_dir, generated_at=generated_at, now=now)
         return True
 
-    merged = preserve_taxonomy(existing, merge_description_fields(existing, record))
+    merged = project_follower_evidence(record, preserve_taxonomy(existing, merge_description_fields(existing, record)))
     merged["content_enrichment_signature"] = signature
     merged["storage_version"] = 2
     _write_json(path, merged)

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from radar_backend.domain.player_categories import category_fields
 from radar_core.domain.twitch_admission import (
     TW_STORE_DATE_AUTHORITY, TW_STORE_DATE_PROVIDER, is_twitch_qualified,
-    normalize_twitch_admission, resolve_store_release_day,
+    normalize_twitch_admission, resolve_store_release_day, has_unavailable_group_followers,
 )
 
 STORE_BROWSE = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
@@ -125,11 +125,28 @@ def official_chinese_title(value: object) -> str | None:
     return value if value and len(value) <= 240 and HAN.search(value) else None
 
 
-def validate_enrichment_input(appid: int, followers: int, twitch_admission: dict | None) -> dict | None:
+def parse_followers(value: str) -> int | None:
+    """The CLI carries unavailable Followers as JSON null, never a zero count."""
+    if value == "null":
+        return None
+    return int(value)
+
+
+def validate_enrichment_input(appid: int, followers: int | None, twitch_admission: dict | None,
+                              *, follower_checked_at: str | None = None,
+                              follower_status: str | None = None,
+                              follower_unavailable_at: str | None = None) -> dict | None:
     admission = normalize_twitch_admission(twitch_admission, appid)
     if twitch_admission is not None and admission is None:
         raise RuntimeError('Invalid Twitch Steam admission proof')
-    if type(followers) is not int or followers < 0 or (followers < 5000 and admission is None):
+    if followers is None:
+        candidate = {"appid": appid, "followers": None, "follower_checked_at": follower_checked_at,
+                     "follower_source": None, "group_id64": None, "official_ge5000": False,
+                     "follower_status": follower_status, "follower_unavailable_at": follower_unavailable_at,
+                     "twitch_admission": admission}
+        if admission is None or not has_unavailable_group_followers(candidate):
+            raise RuntimeError('Unavailable Steam Followers require verified missing GroupID and Twitch admission')
+    elif type(followers) is not int or followers < 0 or (followers < 5000 and admission is None):
         raise RuntimeError('Steam Followers must be verified; low counts require Twitch admission')
     return admission
 
@@ -164,10 +181,11 @@ class ContentSnapshot:
 
 
 def record_from_snapshot(
-    snapshot: ContentSnapshot, *, appid: int, followers: int,
+    snapshot: ContentSnapshot, *, appid: int, followers: int | None,
     event_release_date: str, follower_checked_at: str | None,
     allow_historical: bool, admission: dict | None, taxonomy: dict,
     descriptions: dict, checked_at: str, observed_now: datetime, convert,
+    follower_status: str | None = None, follower_unavailable_at: str | None = None,
 ) -> dict:
     en, tw, cn, details = snapshot.english, snapshot.traditional, snapshot.simplified, snapshot.details
     descriptor_ids = validate_store_snapshot(appid, en, details, admission)
@@ -305,8 +323,8 @@ def record_from_snapshot(
         "release_date_conflict": release_date_conflict,
         "followers": followers,
         "follower_checked_at": follower_checked_at,
-        "follower_source": "Steam Community XML memberCount",
-        "official_ge5000": followers >= 5000,
+        "follower_source": "Steam Community XML memberCount" if followers is not None else None,
+        "official_ge5000": followers is not None and followers >= 5000,
         "sexual_content_screened": True,
         "capsule_image": capsule,
         "header_image": header,
@@ -329,6 +347,9 @@ def record_from_snapshot(
     }
     if details.get('type') == 'game':
         record['steam_type'] = 'game'
+    if followers is None:
+        record.update(group_id64=None, follower_status=follower_status,
+                      follower_unavailable_at=follower_unavailable_at)
     if release_date_resolution is not None:
         record.update(release_date_resolution)
         if ordinary_exact_released or release_date_resolution['release_date_normalization'] == TW_STORE_DATE_AUTHORITY:

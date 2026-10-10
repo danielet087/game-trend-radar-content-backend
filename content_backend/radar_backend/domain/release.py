@@ -1,7 +1,7 @@
 """Preserve verified release and admission evidence without storage access."""
 
 from datetime import datetime, timezone
-from radar_core.domain.twitch_admission import preserve_twitch_admission
+from radar_core.domain.twitch_admission import preserve_twitch_admission, has_unavailable_group_followers, aware_time
 from typing import Callable
 
 RELEASE_FIELDS = (
@@ -42,6 +42,15 @@ def keep_newer_release(
     result = preserve_categories(
         existing, preserve_twitch_admission(existing, incoming)
     )
+    if (existing.get("appid") == result.get("appid")
+            and has_unavailable_group_followers(existing)
+            and has_unavailable_group_followers(result)
+            and aware_time(existing["follower_unavailable_at"]) > aware_time(result["follower_unavailable_at"])):
+        # A queued master cannot roll back the latest missing-group observation.
+        for key in ("followers", "follower_checked_at", "follower_source", "official_ge5000",
+                    "follower_status", "follower_unavailable_at", "group_id64"):
+            if key in existing:
+                result[key] = existing[key]
     # Admission is an independent source. Ordinary metadata refreshes cannot
     # erase a verified Twitch discovery, including when Followers remain low.
     if existing.get("release_display_precision") == "date_full" and checked_at(

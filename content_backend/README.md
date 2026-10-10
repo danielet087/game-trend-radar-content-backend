@@ -5,8 +5,10 @@ Event-driven Steam metadata enrichment backend.
 ## Responsibility
 
 This backend does **not** discover games and does **not** verify Followers.
-It only accepts a game after Backend A has verified Steam Community
-`memberCount >= 5000`.
+It accepts official Steam Community `memberCount >= 5000`, or the existing
+verified Twitch discovery with the same Steam game identity, exact Taiwan date
+and adult-content checks. Missing GroupID can use that Twitch qualification;
+it does not create a Steam Followers value.
 
 For each accepted AppID it refreshes official/public Steam content:
 
@@ -18,7 +20,7 @@ For each accepted AppID it refreshes official/public Steam content:
 - genres
 - public Steam Store tags when available
 - short description
-- official Followers value supplied by Backend A
+- official Followers value supplied by Backend A, or explicit unavailable state
 
 The enriched record is then upserted into
 `game-trend-radar/data/steam_upcoming.json`.
@@ -37,7 +39,8 @@ changing release dates. No additional schedule is created.
 
 ## Event contract
 
-`repository_dispatch` event type: `steam_game_qualified`
+`repository_dispatch` event types: `steam_game_qualified`, `steam_game_refresh`,
+`steam_game_twitch_discovered`.
 
 Required payload:
 
@@ -52,6 +55,38 @@ Required payload:
 
 A future physical split into a dedicated repository only requires moving this
 directory and its workflow, then changing Backend A's dispatch target.
+
+## Missing GroupID with Twitch admission
+
+The producer must supply the original validated `twitch_admission` proof and
+these follower fields for an unavailable observation:
+
+```json
+{
+  "official_followers": null,
+  "official_checked_at_taipei": null,
+  "follower_source": null,
+  "group_id64": null,
+  "official_ge5000": false,
+  "follower_status": "unavailable_group_id",
+  "follower_unavailable_at": "2026-10-10T03:00:00Z"
+}
+```
+
+The unavailable timestamp must be timezone-aware and at least the admission
+check time. Before collection, the workflow checks the proof against the exact
+frontend commit's tracking and discovery snapshots. A rate limit, absent proof,
+shared series identity, vague date or failed adult screen cannot use this path.
+The CLI carries the value as `--followers null`, plus `--follower-status`,
+`--follower-unavailable-at` and the existing `--twitch-admission` file.
+
+Followers stay JSON `null` in the detail shard, calendar, browser catalog and
+legacy fallback; a measured zero stays numeric `0`. Content does not query or
+invent Followers. A later verified count replaces the unavailable state, and
+a subsequent missing-group event preserves any existing genuine measurement.
+Enrichment, reconciliation and frozen publication retain that count while still
+publishing valid metadata changes. Unknown events cannot claim an ordinary
+record without the complete Twitch identity/date/content proof.
 
 ## 分層架構
 

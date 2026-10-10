@@ -96,3 +96,11 @@ Publication 的 shard 掃描與 state 的 JSON 存取屬外層發布／保存責
 本批新增純 `catalog_matches`，核對 version、count、revision、完整 games 與 JSON 值型別；generated_at 不參與 no-op 判定，合法相同輸出保持原 bytes／mtime。State writer 在同 revision 但實際 payload 不符時重寫；`_shard_in_sync` 同時檢查全投影、index revision 與 path，讓原既有修復分支恢復一致資料。不重新查 HTTP，不修改 accepted shard 或更新資格證據；兩個 producer 的 FIELDS、完整 rows hash、v3 schema、JSON 格式與 strict gate 保持。
 
 新增七項真回歸與更正一項原先只信任 revision 的錯誤測試政策；修後完整 suite 為 348 項。跨 consumer 真 Steam timestamp-only refresh → Content no-force repair → freeze → 本機 bare Git publish → 重複 no-op 已通過，並核對原 shard bytes、hash 與觀測時間保持。其他凍結、Git 有限重試、partial／superseded 與成功收據控制內容不變。驗收與相依 PR 合併順序記錄於 Steam repository 的 `docs/backend-acceptance.md`。
+
+## GroupID 缺失時沿用 Twitch 資格
+
+Core 0.3.0 的 `has_unavailable_group_followers` 驗證明確的 unavailable 欄位與 Twitch 證據，最終資格仍由 `is_twitch_qualified` 完整核對遊戲身分、精確台灣日期和成人篩選。Content 接受 `followers: null` 的前提是 `follower_status: unavailable_group_id`、有時區的 `follower_unavailable_at` 不早於 Twitch 查核，以及 null 的量測時間／來源、沒有已知群組、`official_ge5000: false`。既有數字零和 ≥5,000 規則保留。
+
+Application 在遠端查詢前驗證輸入，reconciliation 保留 null 和 unavailable 證據；job 透過 `--followers null` 與兩個明確狀態參數傳遞。Dispatch 在同一 immutable frontend SHA 重新驗證 Twitch tracking／discovery 後才查 Steam。Domain 的 browser 欄位加入 Followers 來源、GroupID 與 unavailable 狀態／時間，description merge 後回填完整 follower evidence，避免既有「跳過 null 文字」行為遺失未知值。
+
+Publication 使用原 projection、v3 完整 rows hash、嚴格 JSON、freeze 與 Git acknowledgment。Detail、calendar、browser、legacy 和 upcoming／released 清單都保留已合格的未知項目；同日實測數字包含 0 排在 unknown 前。較新的缺群組觀測不被舊 master 回退，真實實測值不被 unknown 覆蓋；正式量測恢復時移除 unavailable 標記。Unknown event 遇到既有實測資料時，可凍結並發布該保留量測與更新的 metadata，仍須同 AppID 的完整 Twitch 資格。收據、partial、superseded 與排程保留既有流程。

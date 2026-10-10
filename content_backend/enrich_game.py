@@ -44,6 +44,7 @@ from radar_backend.publication.catalog import (
     excluded_public_appids, upsert_sharded,
 )
 from radar_backend.state.json_documents import write_json as _write_json
+from radar_backend.domain.catalog import official_followers_at_least, project_follower_evidence
 
 SteamRateLimit = _store.SteamRateLimit
 OPENCC = OpenCC("s2t")
@@ -78,16 +79,18 @@ def taxonomy_fields(payload: dict | None, appid: int) -> dict:
     return _taxonomy_fields(payload, appid, utc_now())
 
 
-def build_record(session, *, appid: int, followers: int, event_release_date: str,
+def build_record(session, *, appid: int, followers: int | None, event_release_date: str,
                  follower_checked_at: str | None, allow_historical: bool = False,
-                 twitch_admission: dict | None = None) -> dict:
+                 twitch_admission: dict | None = None, follower_status: str | None = None,
+                 follower_unavailable_at: str | None = None) -> dict:
     ports = EnrichmentPorts(browse_one, appdetails, fetch_store_taxonomy,
                             description_fields, OPENCC.convert, time.sleep, utc_now,
                             lambda: datetime.now(timezone.utc))
     return _build_record(session, ports=ports, appid=appid, followers=followers,
                          event_release_date=event_release_date,
                          follower_checked_at=follower_checked_at,
-                         allow_historical=allow_historical, twitch_admission=twitch_admission)
+                         allow_historical=allow_historical, twitch_admission=twitch_admission,
+                         follower_status=follower_status, follower_unavailable_at=follower_unavailable_at)
 
 def refresh_player_categories(session: requests.Session, appid: int) -> dict:
     return _refresh_categories(session, appid, browse=browse_one, details=appdetails, utc_now=utc_now)
@@ -103,7 +106,7 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
         (g for g in games if int(g.get("appid", -1)) == appid), None
     )
     record = keep_newer_release(existing or {}, record)
-    if 'twitch_admission' in record and not is_twitch_qualified(record):
+    if ('twitch_admission' in record or record.get('followers') is None) and not is_twitch_qualified(record):
         raise RuntimeError(f'AppID {appid} has an invalid Twitch-source Steam qualification')
     signature = f"{appid}:{record['followers']}:{record['release_start']}"
     if existing:
@@ -112,14 +115,18 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
             and existing.get("header_image")
             and isinstance(existing.get("language_support"), dict)
             and isinstance(existing.get("tags"), list)
-            and (int(existing.get("followers", 0)) >= 5000 or is_twitch_qualified(existing))
+            and (official_followers_at_least(existing, 5000) or is_twitch_qualified(existing))
             and existing.get('twitch_admission') == record.get('twitch_admission')
+            and all(existing.get(key) == record.get(key) for key in ("follower_status", "follower_unavailable_at"))
             and (not has_verified_categories(record) or (
                 has_verified_categories(existing) and existing['categories'] == record['categories']))
         )
         if already and not force:
             return False
-        existing.update(preserve_taxonomy(existing, merge_description_fields(existing, record)))
+        existing.update(project_follower_evidence(record, preserve_taxonomy(existing, merge_description_fields(existing, record))))
+        for key in ("follower_status", "follower_unavailable_at"):
+            if key not in record and record.get("followers") is not None:
+                existing.pop(key, None)
         existing["content_enrichment_signature"] = signature
     else:
         row = dict(record)

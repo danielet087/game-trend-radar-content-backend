@@ -8,8 +8,32 @@ from radar_core.domain.twitch_admission import (
     aware_time,
     is_twitch_qualified,
     normalize_twitch_admission,
+    has_unavailable_group_followers,
 )
 from radar_backend.domain.content import TAIPEI, valid_date
+
+
+def official_followers_at_least(row: dict, minimum: int) -> bool:
+    """Unknown, booleans and malformed values never satisfy an official gate."""
+    return type(row.get("followers")) is int and row["followers"] >= minimum
+
+
+def follower_sort_count(row: dict) -> int:
+    """Unknown sorts after measured counts without modifying the source field."""
+    return row["followers"] if type(row.get("followers")) is int else 0
+
+
+def project_follower_evidence(record: dict, merged: dict) -> dict:
+    """Description merges may skip empty text; follower nulls remain explicit."""
+    result = dict(merged)
+    for key in ("followers", "follower_checked_at", "follower_source", "official_ge5000",
+                "group_id64", "official_group_id64", "group_short_id",
+                "follower_status", "follower_unavailable_at"):
+        if key in record:
+            result[key] = record[key]
+        elif key in ("follower_status", "follower_unavailable_at") and record.get("followers") is not None:
+            result.pop(key, None)
+    return result
 
 
 def metadata_gaps(
@@ -24,10 +48,13 @@ def metadata_gaps(
     # A fresh date audit can finish while this run still holds an older master.
     source = preserve_release(record, source)
     gaps = []
-    if record.get("release_start") != source["release_start"] or int(
-        record.get("followers") or 0
-    ) != int(source["followers"]):
+    if record.get("release_start") != source["release_start"] or record.get("followers") != source["followers"]:
         gaps.append("source_changed")
+    if source.get("followers") is None and (
+        not has_unavailable_group_followers(record)
+        or record.get("follower_unavailable_at") != source.get("follower_unavailable_at")
+    ):
+        gaps.append("follower_availability")
     admission = normalize_twitch_admission(
         source.get("twitch_admission"), source.get("appid")
     )
@@ -92,7 +119,7 @@ def metadata_gaps(
 def qualified_source(
     source: dict,
     appid: int,
-    followers: int,
+    followers: int | None,
     day,
     *,
     historical: bool,
@@ -100,7 +127,7 @@ def qualified_source(
 ) -> bool:
     return (
         appid > 0
-        and (followers >= 5000 or is_twitch_qualified(source))
+        and ((type(followers) is int and followers >= 5000) or is_twitch_qualified(source))
         and valid_date(day)
         and appid not in blocked
         and (source.get("release_display_precision") == "date_full" or historical)
@@ -117,4 +144,6 @@ def enrichment_signature(appid: int, source: dict) -> str:
                 json.dumps(admission, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()[:20]
         )
+    if source.get("followers") is None:
+        signature += f":{source.get('follower_status')}:{source.get('follower_unavailable_at')}"
     return signature

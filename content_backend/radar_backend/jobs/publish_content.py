@@ -12,6 +12,7 @@ from radar_backend.publication.content_snapshot import (
     load_json, strict_catalog,
 )
 from radar_backend.state.json_documents import write_json
+from radar_backend.domain.content import parse_followers
 
 
 def _revision(frontend: Path) -> str:
@@ -27,7 +28,7 @@ def main() -> None:
     validate.add_argument("--master", type=Path)
     enrich = sub.add_parser("freeze-enrichment")
     enrich.add_argument("--appid", type=int, required=True)
-    enrich.add_argument("--followers", type=int, required=True)
+    enrich.add_argument("--followers", type=parse_followers, required=True)
     enrich.add_argument("--release-date", required=True)
     enrich.add_argument("--force", action="store_true")
     reconcile = sub.add_parser("freeze-reconciliation")
