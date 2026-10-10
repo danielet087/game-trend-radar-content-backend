@@ -20,10 +20,14 @@ class EnrichmentPorts:
     now: Callable
 
 
-def build_record(session, *, ports: EnrichmentPorts, appid: int, followers: int,
+def build_record(session, *, ports: EnrichmentPorts, appid: int, followers: int | None,
                  event_release_date: str, follower_checked_at: str | None,
-                 allow_historical: bool = False, twitch_admission: dict | None = None) -> dict:
-    admission = validate_enrichment_input(appid, followers, twitch_admission)
+                 allow_historical: bool = False, twitch_admission: dict | None = None,
+                 follower_status: str | None = None, follower_unavailable_at: str | None = None) -> dict:
+    admission = validate_enrichment_input(appid, followers, twitch_admission,
+                                          follower_checked_at=follower_checked_at,
+                                          follower_status=follower_status,
+                                          follower_unavailable_at=follower_unavailable_at)
     en = ports.browse(session, appid, "english")
     ports.sleep(1.0)
     tw = ports.browse(session, appid, "tchinese")
@@ -41,6 +45,7 @@ def build_record(session, *, ports: EnrichmentPorts, appid: int, followers: int,
         allow_historical=allow_historical, admission=admission, taxonomy=taxonomy,
         descriptions={}, checked_at=ports.utc_now(), observed_now=ports.now(),
         convert=ports.convert,
+        follower_status=follower_status, follower_unavailable_at=follower_unavailable_at,
     )
     # Resolve translation evidence only after exact-date/artwork qualification.
     # The legacy translation helper reads a curated JSON; it is an injected port,

@@ -123,7 +123,8 @@ def reconcile(
         if not isinstance(source, dict):
             continue
         try:
-            appid, followers = int(source["appid"]), int(source["followers"])
+            appid = int(source["appid"])
+            followers = None if source["followers"] is None else int(source["followers"])
         except (KeyError, TypeError, ValueError):
             continue
         day = source.get("release_start")
@@ -188,15 +189,19 @@ def reconcile(
                 ):
                     enriched = cached["record"]
                 else:
+                    availability = ({"follower_status": source.get("follower_status"),
+                                     "follower_unavailable_at": source.get("follower_unavailable_at")}
+                                    if source["followers"] is None else {})
                     enriched = build_record(
                         session,
                         appid=appid,
-                        followers=int(source["followers"]),
+                        followers=source["followers"],
                         event_release_date=source["release_start"],
                         follower_checked_at=source.get("follower_checked_at"),
                         allow_historical=source["release_start"] < today
                         and isinstance(record, dict),
                         twitch_admission=admission,
+                        **availability,
                     )
                     if cached_path:
                         _write_json(

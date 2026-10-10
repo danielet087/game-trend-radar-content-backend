@@ -12,7 +12,7 @@ import subprocess
 from radar_core.domain.twitch_admission import aware_time, is_twitch_qualified
 from radar_core.publication import snapshot_revision
 from radar_backend.adapters.catalog_rules import metadata_gaps, keep_newer_release
-from radar_backend.domain.catalog import qualified_source
+from radar_backend.domain.catalog import qualified_source, official_followers_at_least, follower_sort_count
 from radar_backend.domain.content import TAIPEI, valid_date
 from radar_backend.publication import catalog
 from radar_backend.state.json_documents import write_json
@@ -91,7 +91,9 @@ def strict_catalog(data_dir: Path, *, require_index: bool = False) -> None:
         if path.parent.name == "games":
             if not path.stem.isdigit() or type(value.get("appid")) is not int or value["appid"] <= 0 or str(value["appid"]) != path.stem:
                 raise RuntimeError(f"Malformed AppID shard: {path}")
-            if type(value.get("followers")) is not int or value["followers"] < 0 or not valid_date(value.get("release_start")):
+            measured = type(value.get("followers")) is int and value["followers"] >= 0
+            unknown = value.get("followers") is None and is_twitch_qualified(value)
+            if not (measured or unknown) or not valid_date(value.get("release_start")):
                 raise RuntimeError(f"Malformed AppID source fields: {path}")
         if path.parent.name == "calendar" or path.name in {"catalog.json", "steam_upcoming.json"}:
             if not isinstance(value.get("games"), list) or any(not isinstance(row, dict) or type(row.get("appid")) is not int for row in value["games"]):
@@ -111,7 +113,7 @@ def validate_record(record: dict) -> None:
     appid = record.get("appid")
     if type(appid) is not int or appid <= 0:
         raise RuntimeError("Invalid enriched AppID")
-    if type(record.get("followers")) is not int or (record["followers"] < 5000 and not is_twitch_qualified(record)):
+    if not (official_followers_at_least(record, 5000) or is_twitch_qualified(record)):
         raise RuntimeError("Unqualified enriched Followers")
     if (record.get("release_display_precision") != "date_full"
             or record.get("release_precision") != "day"
@@ -129,8 +131,8 @@ def validate_record(record: dict) -> None:
 
 def _accepted_rows(data_dir: Path) -> list[dict]:
     rows = [load_json(path) for path in (data_dir / "games").glob("*.json")]
-    rows = [row for row in rows if int(row["followers"]) >= 3000 or is_twitch_qualified(row)]
-    return sorted(rows, key=lambda row: (row["release_start"], -int(row["followers"]), int(row["appid"])))
+    rows = [row for row in rows if official_followers_at_least(row, 3000) or is_twitch_qualified(row)]
+    return sorted(rows, key=lambda row: (row["release_start"], row.get("followers") is None, -follower_sort_count(row), int(row["appid"])))
 
 
 def validate_snapshot(data_dir: Path, *, now: datetime | None = None) -> None:
@@ -152,8 +154,8 @@ def validate_snapshot(data_dir: Path, *, now: datetime | None = None) -> None:
     if any(not (data_dir / "calendar" / f"{month}.json").is_file() for month in months):
         raise RuntimeError("Missing calendar shard")
     today = (now or datetime.now(TAIPEI)).astimezone(TAIPEI).date()
-    upcoming = [row["appid"] for row in rows if row["release_start"] >= today.isoformat() and (row["followers"] >= 5000 or is_twitch_qualified(row))]
-    released = [row["appid"] for row in rows if (today - timedelta(days=30)).isoformat() <= row["release_start"] < today.isoformat() and (row["followers"] >= 5000 or is_twitch_qualified(row) or (row["followers"] > 3000 and row.get("recent_source") in {"tracked_release", "direct_release"}))]
+    upcoming = [row["appid"] for row in rows if row["release_start"] >= today.isoformat() and (official_followers_at_least(row, 5000) or is_twitch_qualified(row))]
+    released = [row["appid"] for row in rows if (today - timedelta(days=30)).isoformat() <= row["release_start"] < today.isoformat() and (official_followers_at_least(row, 5000) or is_twitch_qualified(row) or (official_followers_at_least(row, 3001) and row.get("recent_source") in {"tracked_release", "direct_release"}))]
     for name, expected in (("upcoming", upcoming), ("released", released)):
         value = load_json(data_dir / "lists" / f"{name}.json")
         if value.get("appids") != expected or value.get("count") != len(expected):
@@ -166,7 +168,7 @@ def validate_snapshot(data_dir: Path, *, now: datetime | None = None) -> None:
         raise RuntimeError("Browser projection does not match accepted records")
 
 
-def freeze_enrichment(frontend: Path, *, appid: int, followers: int,
+def freeze_enrichment(frontend: Path, *, appid: int, followers: int | None,
                       event_release_date: str, force: bool, input_revision: str) -> dict:
     changed_paths(frontend)
     prepared_at = datetime.now(timezone.utc).replace(microsecond=0)
@@ -174,7 +176,15 @@ def freeze_enrichment(frontend: Path, *, appid: int, followers: int,
     strict_catalog(data_dir, require_index=True)
     record = load_json(data_dir / "games" / f"{appid}.json")
     validate_record(record)
-    if record["appid"] != appid or record["followers"] != followers or not valid_date(event_release_date):
+    preserved_measurement = (
+        followers is None
+        and type(record.get("followers")) is int
+        and record["followers"] >= 0
+        and aware_time(record.get("follower_checked_at")) is not None
+        and is_twitch_qualified(record)
+    )
+    if (record["appid"] != appid or (record["followers"] != followers and not preserved_measurement)
+            or not valid_date(event_release_date)):
         raise RuntimeError("Enriched record does not match its event")
     validate_snapshot(data_dir, now=prepared_at)
     sources = {"frontend": input_revision}
@@ -205,6 +215,10 @@ def freeze_reconciliation(frontend: Path, *, master_path: Path, input_revision: 
 def _newer(existing: dict, incoming: dict) -> bool:
     """No queued record may roll back newer official or content evidence."""
     minimum = datetime.min.replace(tzinfo=timezone.utc)
+    if existing.get("followers") is None and incoming.get("followers") is None:
+        if ((aware_time(existing.get("follower_unavailable_at")) or minimum)
+                > (aware_time(incoming.get("follower_unavailable_at")) or minimum)):
+            return True
     for field in ("follower_checked_at", "content_enriched_at"):
         old = aware_time(existing.get(field)) or minimum
         new = aware_time(incoming.get(field)) or minimum
@@ -294,7 +308,8 @@ class FrozenContentPublication:
             if not isinstance(source, dict):
                 continue
             try:
-                appid, followers = int(source["appid"]), int(source["followers"])
+                appid = int(source["appid"])
+                followers = None if source["followers"] is None else int(source["followers"])
             except (KeyError, ValueError, TypeError):
                 continue
             day = source.get("release_start")
