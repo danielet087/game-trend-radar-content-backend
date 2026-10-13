@@ -22,8 +22,91 @@ OWNED_PATHS = (
     "data/games/", "data/calendar/", "data/lists/", "data/index.json",
     "data/steam_upcoming.json", "data/catalog.json", "data/content_refresh_status.json",
     "data/publication/steam_content.json",
+    "data/publication/activity_origins.json",
 )
 MANIFEST_PATH = "publication/steam_content.json"
+ACTIVITY_ORIGINS_PATH = "publication/activity_origins.json"
+ACTIVITY_ORIGIN_LIMIT = 1000
+EVENT_ACTIONS = frozenset({"", "workflow_dispatch", "steam_game_qualified",
+                           "steam_game_twitch_discovered", "steam_game_refresh"})
+UPDATE_REASONS = frozenset({"twitch_rankings", "steam_daily_search",
+                            "steam_official_verification", "steam_metadata_refresh",
+                            "steam_catalog_sync"})
+PROVENANCE_FIELDS = ("source_repository", "source_workflow", "discovery_source", "source_run_id")
+
+
+def _event_origin(event_action: str, source_provenance: dict | None = None) -> dict:
+    """Freeze explicit trigger evidence; stored admission is not update evidence."""
+    if not isinstance(event_action, str) or event_action not in EVENT_ACTIONS:
+        raise RuntimeError("Unknown Steam content event action")
+    if source_provenance is not None and not isinstance(source_provenance, dict):
+        raise RuntimeError("Malformed content source provenance")
+    provenance = {}
+    for key, value in (source_provenance or {}).items():
+        if key not in PROVENANCE_FIELDS or not isinstance(value, str) or len(value) > 500:
+            raise RuntimeError("Malformed content source provenance field")
+        if value:
+            provenance[key] = value
+    reason = {
+        "steam_game_twitch_discovered": "twitch_rankings",
+        "steam_game_qualified": "steam_official_verification",
+        "steam_game_refresh": "steam_metadata_refresh",
+        "workflow_dispatch": "steam_official_verification",
+        "": "steam_metadata_refresh",  # Legacy freezes carry no precise trigger.
+    }[event_action]
+    # A missing admission or an official count never proves daily discovery.
+    # Only a declared upstream discovery workflow can select this narrower label.
+    if (event_action == "steam_game_qualified"
+            and provenance.get("discovery_source") == "steam_daily_search"
+            and provenance.get("source_repository") == "danielet087/game-trend-radar-backend"
+            and provenance.get("source_workflow") == "steam-two-phase.yml"):
+        reason = "steam_daily_search"
+    return {"event_action": event_action, "source_provenance": provenance,
+            "update_reason": reason}
+
+
+def validate_activity_origins(value: dict) -> None:
+    if (value.get("schema_version") != 1 or type(value.get("schema_version")) is not int
+            or not isinstance(value.get("events"), list)):
+        raise RuntimeError("Malformed activity origin history")
+    for event in value["events"]:
+        if (not isinstance(event, dict) or type(event.get("appid")) is not int or event["appid"] <= 0
+                or event.get("type") not in {"added", "release_date"}
+                or not valid_date(event.get("date")) or aware_time(event.get("at")) is None
+                or event.get("update_reason") not in UPDATE_REASONS
+                or (event["type"] == "release_date" and not valid_date(event.get("previous_date")))):
+            raise RuntimeError("Malformed activity origin event")
+
+
+def record_activity_origins(data_dir: Path, previous_catalog: dict, frozen: dict,
+                            payload_revision: str) -> None:
+    """Attribute only this attempt's actual accepted catalog additions/date changes."""
+    previous = {row["appid"]: row for row in previous_catalog["games"]}
+    current = load_json(data_dir / "catalog.json")["games"]
+    path = data_dir / ACTIVITY_ORIGINS_PATH
+    history = load_json(path) if path.is_file() else {"schema_version": 1, "events": []}
+    validate_activity_origins(history)
+    origin = frozen.get("activity_origin") or (
+        {"update_reason": "steam_catalog_sync"} if frozen["kind"] == "reconciliation"
+        else _event_origin(""))
+    events = list(history["events"])
+    ids = {event.get("id") for event in events if event.get("id")}
+    for row in current:
+        prior = previous.get(row["appid"])
+        kind = "added" if prior is None else "release_date" if prior["release_start"] != row["release_start"] else None
+        if kind is None:
+            continue
+        event = {"appid": row["appid"], "type": kind, "date": row["release_start"],
+                 "update_reason": origin["update_reason"], "at": frozen["prepared_at"],
+                 "payload_revision": payload_revision}
+        if kind == "release_date":
+            event["previous_date"] = prior["release_start"]
+        event["id"] = snapshot_revision(event)[:24]
+        if event["id"] not in ids:
+            events.append(event)
+            ids.add(event["id"])
+    if events != history["events"]:
+        write_json(path, {"schema_version": 1, "events": events[-ACTIVITY_ORIGIN_LIMIT:]})
 
 
 def load_json(path: Path):
@@ -78,7 +161,7 @@ def strict_catalog(data_dir: Path, *, require_index: bool = False) -> None:
         raise RuntimeError("Missing sharded frontend index")
     paths = [data_dir / name for name in (
         "index.json", "catalog.json", "steam_upcoming.json", "content_refresh_status.json",
-        "lists/upcoming.json", "lists/released.json", MANIFEST_PATH,
+        "lists/upcoming.json", "lists/released.json", MANIFEST_PATH, ACTIVITY_ORIGINS_PATH,
     )]
     paths += list((data_dir / "games").glob("*.json"))
     paths += list((data_dir / "calendar").glob("*.json"))
@@ -104,6 +187,8 @@ def strict_catalog(data_dir: Path, *, require_index: bool = False) -> None:
             raise RuntimeError(f"Malformed catalog index: {path}")
         if path.name == "content_refresh_status.json" and (type(value.get("complete")) is not bool or not isinstance(value.get("failures"), dict) or not isinstance(value.get("pending_enrichment"), dict)):
             raise RuntimeError(f"Malformed content status: {path}")
+        if path.name == "activity_origins.json":
+            validate_activity_origins(value)
 
 
 def validate_record(record: dict) -> None:
@@ -167,7 +252,8 @@ def validate_snapshot(data_dir: Path, *, now: datetime | None = None) -> None:
 
 
 def freeze_enrichment(frontend: Path, *, appid: int, followers: int,
-                      event_release_date: str, force: bool, input_revision: str) -> dict:
+                      event_release_date: str, force: bool, input_revision: str,
+                      event_action: str = "", source_provenance: dict | None = None) -> dict:
     changed_paths(frontend)
     prepared_at = datetime.now(timezone.utc).replace(microsecond=0)
     data_dir = frontend / "data"
@@ -180,7 +266,8 @@ def freeze_enrichment(frontend: Path, *, appid: int, followers: int,
     sources = {"frontend": input_revision}
     return {"schema_version": 1, "kind": "enrichment", "input_revision": snapshot_revision(sources), "source_revisions": sources,
             "prepared_at": prepared_at.isoformat(),
-            "records": [record], "event_release_date": event_release_date, "force": force}
+            "records": [record], "event_release_date": event_release_date, "force": force,
+            "activity_origin": _event_origin(event_action, source_provenance)}
 
 
 def freeze_reconciliation(frontend: Path, *, master_path: Path, input_revision: str,
@@ -199,7 +286,8 @@ def freeze_reconciliation(frontend: Path, *, master_path: Path, input_revision: 
     return {"schema_version": 1, "kind": "reconciliation", "input_revision": snapshot_revision(sources),
             "source_revisions": sources, "records": records, "master": master,
             "prepared_at": prepared_at.isoformat(),
-            "collected_status": status}
+            "collected_status": status,
+            "activity_origin": {"update_reason": "steam_catalog_sync"}}
 
 
 def _newer(existing: dict, incoming: dict) -> bool:
@@ -241,6 +329,14 @@ class FrozenContentPublication:
             raise RuntimeError("Enrichment batch must contain exactly one record")
         if aware_time(frozen.get("prepared_at")) is None:
             raise RuntimeError("Frozen publication needs its preparation timestamp")
+        if "activity_origin" in frozen:
+            origin = frozen["activity_origin"]
+            if not isinstance(origin, dict):
+                raise RuntimeError("Malformed frozen activity origin")
+            expected = ({"update_reason": "steam_catalog_sync"} if frozen["kind"] == "reconciliation"
+                        else _event_origin(origin.get("event_action", ""), origin.get("source_provenance")))
+            if origin != expected:
+                raise RuntimeError("Frozen activity reason disagrees with its trigger evidence")
         self.frozen = copy.deepcopy(frozen)
         self.now = aware_time(frozen["prepared_at"])
         self.payload_revision = snapshot_revision(frozen)
@@ -250,6 +346,7 @@ class FrozenContentPublication:
         data_dir = frontend / "data"
         strict_catalog(data_dir, require_index=True)
         before = _documents(data_dir)
+        previous_catalog = before.get("catalog.json") or {"games": _accepted_rows(data_dir)}
         original_text = {name: (data_dir / name).read_text(encoding="utf-8") for name in before}
         blocked = catalog.excluded_public_appids(data_dir)
         superseded = []
@@ -275,6 +372,7 @@ class FrozenContentPublication:
             result = {"complete": True, "pending_count": 0, "superseded_appids": []}
         _keep_unchanged_times(data_dir, before, original_text)
         validate_snapshot(data_dir, now=self.now)
+        record_activity_origins(data_dir, previous_catalog, self.frozen, self.payload_revision)
         target_snapshot = snapshot_revision(_documents(data_dir))
         manifest = {"schema_version": 1, "operation": self.frozen["kind"],
                     "input_revision": self.frozen["input_revision"],

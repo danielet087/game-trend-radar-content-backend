@@ -9,7 +9,7 @@ from radar_core.jobs import JobResult, JobStatus
 from radar_core.publication import SubprocessGitRepository, publish_with_retry
 from radar_backend.publication.content_snapshot import (
     FrozenContentPublication, OWNED_PATHS, freeze_enrichment, freeze_reconciliation,
-    load_json, strict_catalog,
+    load_json, strict_catalog, PROVENANCE_FIELDS,
 )
 from radar_backend.state.json_documents import write_json
 
@@ -30,6 +30,9 @@ def main() -> None:
     enrich.add_argument("--followers", type=int, required=True)
     enrich.add_argument("--release-date", required=True)
     enrich.add_argument("--force", action="store_true")
+    enrich.add_argument("--event-action", default="")
+    for field in PROVENANCE_FIELDS:
+        enrich.add_argument("--" + field.replace("_", "-"), default="")
     reconcile = sub.add_parser("freeze-reconciliation")
     reconcile.add_argument("--master", type=Path, required=True)
     reconcile.add_argument("--source-revision", required=True)
@@ -52,7 +55,8 @@ def main() -> None:
     if args.command == "freeze-enrichment":
         frozen = freeze_enrichment(args.frontend, appid=args.appid, followers=args.followers,
                                    event_release_date=args.release_date, force=args.force,
-                                   input_revision=_revision(args.frontend))
+                                   input_revision=_revision(args.frontend), event_action=args.event_action,
+                                   source_provenance={field: getattr(args, field) for field in PROVENANCE_FIELDS})
         write_json(args.output, frozen)
         return
     if args.command == "freeze-reconciliation":

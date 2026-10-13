@@ -15,7 +15,7 @@ from radar_core.publication import PublicationError, SubprocessGitRepository, pu
 from radar_backend.publication import catalog
 from radar_backend.publication.content_snapshot import (
     FrozenContentPublication, OWNED_PATHS, changed_paths, freeze_enrichment,
-    freeze_reconciliation, strict_catalog, validate_snapshot,
+    freeze_reconciliation, strict_catalog, validate_snapshot, ACTIVITY_ORIGINS_PATH,
 )
 from radar_backend.state.json_documents import load_json, write_json
 from steam_player_modes import BROWSE_SOURCE
@@ -65,11 +65,13 @@ class LocalGitFixture(unittest.TestCase):
         self.git(cwd, "add", "--all")
         self.git(cwd, "commit", "-m", message)
 
-    def freeze(self, appid=123, **changes):
-        catalog.upsert_sharded(self.frontend / "data", record(appid, **changes), "2099-01-01", force=True)
+    def freeze(self, appid=123, *, event_action="", source_provenance=None, **changes):
+        release = changes.get("release_start", "2099-01-01")
+        catalog.upsert_sharded(self.frontend / "data", record(appid, **changes), release, force=True)
         return freeze_enrichment(self.frontend, appid=appid, followers=changes.get("followers", 6000),
-                                 event_release_date="2099-01-01", force=False,
-                                 input_revision=self.git(self.frontend, "rev-parse", "HEAD"))
+                                 event_release_date=release, force=False,
+                                 input_revision=self.git(self.frontend, "rev-parse", "HEAD"),
+                                 event_action=event_action, source_provenance=source_provenance)
 
     def publish(self, frozen, repository=None, attempts=12):
         replay = FrozenContentPublication(frozen)
@@ -110,6 +112,9 @@ class ContentPublicationTests(LocalGitFixture):
         self.assertEqual(self.remote_json("data/publication/steam_content.json")["payload_revision"], snapshot_revision(frozen))
         self.assertNotEqual(receipt.target_snapshot_revision, replay.result["dataset_revision"])
         self.assertEqual(self.remote_json("data/index.json")["generated_at"], frozen["prepared_at"])
+        origins = self.remote_json("data/" + ACTIVITY_ORIGINS_PATH)["events"]
+        self.assertEqual([event["appid"] for event in origins], [123])
+        self.assertEqual(origins[0]["at"], frozen["prepared_at"])
         validate_snapshot(self.frontend / "data")
 
     def test_noop_still_requires_acknowledged_remote_push(self):
@@ -126,6 +131,7 @@ class ContentPublicationTests(LocalGitFixture):
         receipt, _ = self.publish(frozen, repository)
         self.assertFalse(receipt.changed)
         self.assertEqual(repository.calls, 1)
+        self.assertEqual(len(self.remote_json("data/" + ACTIVITY_ORIGINS_PATH)["events"]), 1)
 
         class RejectedRepository(SubprocessGitRepository):
             def push(self, expected_revision=None):
@@ -181,6 +187,8 @@ class ContentPublicationTests(LocalGitFixture):
         self.assertEqual(replay.result["pending_count"], 1)
         self.assertEqual(frozen, untouched)
         self.assertTrue(receipt.changed)
+        self.assertEqual(self.remote_json("data/" + ACTIVITY_ORIGINS_PATH)["events"][0]["update_reason"],
+                         "steam_catalog_sync")
         self.publish(frozen)
         self.assertEqual(self.remote_json("data/content_refresh_status.json"), result)
 
@@ -358,6 +366,85 @@ class ContentPublicationTests(LocalGitFixture):
             self.publish(frozen)
         self.assertFalse((self.other / "data/games/123.json").exists())
 
+    def test_origins_follow_frozen_dispatch_action_with_explicit_daily_evidence(self):
+        cases = (
+            ("steam_game_twitch_discovered", None, "twitch_rankings"),
+            ("steam_game_qualified", None, "steam_official_verification"),
+            ("steam_game_refresh", None, "steam_metadata_refresh"),
+            ("steam_game_qualified", {"discovery_source": "steam_daily_search"}, "steam_official_verification"),
+            ("steam_game_qualified", {"discovery_source": "steam_daily_search",
+                                      "source_workflow": "steam-two-phase.yml",
+                                      "source_repository": "danielet087/game-trend-radar-backend"}, "steam_daily_search"),
+        )
+        for index, (action, provenance, reason) in enumerate(cases):
+            with self.subTest(action=action, provenance=provenance):
+                frozen = self.freeze(appid=200 + index, event_action=action, source_provenance=provenance)
+                original = copy.deepcopy(frozen)
+                with patch.dict(os.environ, EVENT_ACTION="steam_game_refresh", DISCOVERY_SOURCE="steam_daily_search"):
+                    receipt, replay = self.publish(frozen)
+                event = self.remote_json("data/" + ACTIVITY_ORIGINS_PATH)["events"][-1]
+                self.assertEqual(event["appid"], 200 + index)
+                self.assertEqual(event["update_reason"], reason)
+                self.assertEqual(frozen, original)
+                self.assertEqual(replay.frozen["activity_origin"]["event_action"], action)
+                self.assertIn("data/" + ACTIVITY_ORIGINS_PATH, OWNED_PATHS)
+                committed = self.git(self.root, "--git-dir", str(self.remote), "show", "--format=", "--name-only", receipt.published_revision)
+                self.assertIn("data/" + ACTIVITY_ORIGINS_PATH, committed.splitlines())
+                self.assertIn(f"data/games/{200 + index}.json", committed.splitlines())
+
+    def test_date_refresh_does_not_reuse_persistent_twitch_admission_as_reason(self):
+        from test_twitch_steam_admission import proof
+        initial = record(101, twitch_admission=proof(101), steam_type="game", release_end="2099-01-01",
+                         release_time_utc="2099-01-01T00:00:00Z", release_timestamp_taipei_date="2099-01-01")
+        catalog.upsert_sharded(self.frontend / "data", initial, "2099-01-01", force=True)
+        self.commit(self.frontend, "Existing Twitch admission")
+        self.git(self.frontend, "push", "origin", "HEAD:main")
+        frozen = self.freeze(appid=101, event_action="steam_game_refresh", twitch_admission=proof(101),
+                             steam_type="game", release_start="2099-02-01", release_end="2099-02-01",
+                             release_time_utc="2099-02-01T00:00:00Z", release_timestamp_taipei_date="2099-02-01",
+                             release_date_verified_at="2026-10-13T00:00:00Z", content_enriched_at="2026-10-13T00:00:00Z")
+        self.publish(frozen)
+        event = self.remote_json("data/" + ACTIVITY_ORIGINS_PATH)["events"][0]
+        self.assertEqual(event["type"], "release_date")
+        self.assertEqual(event["previous_date"], "2099-01-01")
+        self.assertEqual(event["date"], "2099-02-01")
+        self.assertEqual(event["update_reason"], "steam_metadata_refresh")
+        self.assertEqual(self.remote_json("data/games/101.json")["twitch_admission"], proof(101))
+
+    def test_unrelated_metadata_change_and_completed_retry_do_not_create_events(self):
+        frozen = self.freeze(appid=101, event_action="steam_game_refresh", name="A changed title")
+        self.publish(frozen)
+        self.assertFalse((self.frontend / "data" / ACTIVITY_ORIGINS_PATH).exists())
+        receipt, _ = self.publish(frozen)
+        self.assertFalse(receipt.changed)
+        self.assertFalse((self.frontend / "data" / ACTIVITY_ORIGINS_PATH).exists())
+
+    def test_corrupt_origin_history_and_relabelled_frozen_trigger_are_rejected(self):
+        frozen = self.freeze(event_action="steam_game_qualified")
+        frozen["activity_origin"]["update_reason"] = "twitch_rankings"
+        with self.assertRaisesRegex(RuntimeError, "trigger evidence"):
+            FrozenContentPublication(frozen)
+        path = self.frontend / "data" / ACTIVITY_ORIGINS_PATH
+        write_json(path, {"schema_version": 1, "events": [{"appid": 123}]})
+        with self.assertRaisesRegex(RuntimeError, "origin event"):
+            strict_catalog(self.frontend / "data")
+
+    def test_origin_history_preserves_latest_remote_events_with_bounded_retention(self):
+        history = [{"id": f"existing-{index}", "appid": 9999, "type": "added", "date": "2099-01-01",
+                    "update_reason": "steam_catalog_sync", "at": CHECKED} for index in range(1000)]
+        write_json(self.other / "data" / ACTIVITY_ORIGINS_PATH, {"schema_version": 1, "events": history})
+        self.commit(self.other, "Existing attribution history")
+        self.git(self.other, "push", "origin", "HEAD:main")
+        frozen = self.freeze(event_action="steam_game_qualified")
+        self.publish(frozen)
+        events = self.remote_json("data/" + ACTIVITY_ORIGINS_PATH)["events"]
+        self.assertEqual(len(events), 1000)
+        self.assertEqual(events[:-1], history[1:])
+        self.assertEqual(events[-1]["appid"], 123)
+        self.assertEqual(events[-1]["update_reason"], "steam_official_verification")
+        self.publish(frozen)
+        self.assertEqual(self.remote_json("data/" + ACTIVITY_ORIGINS_PATH)["events"], events)
+
 
 class WorkflowPublicationTests(unittest.TestCase):
     def test_publication_commands_use_write_auth_and_fixed_attempts_in_job(self):
@@ -379,6 +466,16 @@ class WorkflowPublicationTests(unittest.TestCase):
         self.assertNotIn('Path("frontend/data/content_refresh_status.json")', summary)
         source = (root / "content_backend/radar_backend/jobs/publish_content.py").read_text()
         self.assertIn('max_attempts=12 if kind == "enrichment" else 8', source)
+
+    def test_dispatch_action_and_upstream_evidence_are_passed_to_freeze_only(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/steam-content-enrichment-dispatch.yml").read_text()
+        freeze = workflow.split("      - name: Freeze validated game", 1)[1].split("      - name:", 1)[0]
+        publish = workflow.split("      - name: Publish frozen content", 1)[1].split("      - name:", 1)[0]
+        self.assertIn('--event-action "$EVENT_ACTION"', freeze)
+        self.assertIn('--discovery-source "$DISCOVERY_SOURCE"', freeze)
+        self.assertIn('--source-workflow "$SOURCE_WORKFLOW"', freeze)
+        self.assertNotIn("--event-action", publish)
 
 
 if __name__ == "__main__":

@@ -38,7 +38,11 @@ jobs:
       OFFICIAL_FOLLOWERS: ${{ github.event.client_payload.official_followers != null && format('{0}', github.event.client_payload.official_followers) || inputs.official_followers }}
       RELEASE_DATE: ${{ github.event.client_payload.release_date || inputs.release_date }}
       OFFICIAL_CHECKED_AT_TAIPEI: ${{ github.event.client_payload.official_checked_at_taipei || inputs.official_checked_at_taipei }}
-      EVENT_ACTION: ${{ github.event.action }}
+      EVENT_ACTION: ${{ github.event.action || github.event_name }}
+      SOURCE_REPOSITORY: ${{ github.event.client_payload.source_repository }}
+      SOURCE_WORKFLOW: ${{ github.event.client_payload.source_workflow }}
+      DISCOVERY_SOURCE: ${{ github.event.client_payload.discovery_source }}
+      SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
       TWITCH_ADMISSION_JSON: ${{ toJSON(github.event.client_payload.twitch_admission) }}
       TWITCH_ADMISSION_PATH: twitch-admission.json
 
@@ -141,6 +145,9 @@ jobs:
           PYTHONPATH=content_backend python -m radar_backend.jobs.publish_content freeze-enrichment \
             --frontend frontend --appid "$APPID" --followers "$OFFICIAL_FOLLOWERS" \
             --release-date "$RELEASE_DATE" "${FORCE_ARGS[@]}" \
+            --event-action "$EVENT_ACTION" --source-repository "$SOURCE_REPOSITORY" \
+            --source-workflow "$SOURCE_WORKFLOW" --discovery-source "$DISCOVERY_SOURCE" \
+            --source-run-id "$SOURCE_RUN_ID" \
             --output "$RUNNER_TEMP/steam-content-batch.json"
 
       - name: Publish frozen content against latest frontend
