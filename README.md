@@ -65,6 +65,8 @@ python content_backend/localize_descriptions.py --data-dir /path/to/frontend/dat
 
 發布前先嚴格檢查既有 JSON；損壞檔案不會被當成空資料覆蓋。AppID、月份、清單、index、legacy 及 v3 browser catalog 的內容必須一致。架構細節見 [backend-architecture.md](docs/backend-architecture.md)。
 
+`data/publication/activity_origins.json` 與公開 catalog 在同一 commit 記錄本次實際新增或改日期的遊戲，保留最近 1,000 筆。觸發事件於收集後凍結，發布衝突只重新比較最新公開 catalog；重試及僅修改圖片、名稱等內容不會重複產生活動。`steam_game_twitch_discovered` 標為 `twitch_rankings`、`steam_game_qualified` 標為 `steam_official_verification`、`steam_game_refresh` 標為 `steam_metadata_refresh`，定時對帳標為 `steam_catalog_sync`。既有 Twitch 收錄證據不代表本次日期更新也來自 Twitch。只有上游明示 `discovery_source=steam_daily_search`，且來源 repository 與 workflow 分別為 `danielet087/game-trend-radar-backend`、`steam-two-phase.yml` 時，官方資格事件才標為 `steam_daily_search`；目前未提供這組證據的事件沿用官方驗證標示。
+
 `public_catalog.py` 的欄位投影與主後端同名模組同步維護。
 
 ## 驗證
