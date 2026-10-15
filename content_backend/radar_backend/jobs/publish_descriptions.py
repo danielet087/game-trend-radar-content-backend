@@ -4,12 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import subprocess
 
 from radar_core.jobs import JobResult, JobStatus
 from radar_core.publication import SubprocessGitRepository, publish_with_retry
 from radar_backend.publication.description_snapshot import FrozenDescriptionPublication, OWNED_PATHS, freeze
 from radar_backend.state.json_documents import load_json, write_json
+from radar_backend.jobs.publish_content import _revision
 
 
 def main():
@@ -26,8 +26,7 @@ def main():
         command.add_argument("--frontend", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "freeze":
-        revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=args.frontend, check=True,
-                                  capture_output=True, text=True).stdout.strip()
+        revision = _revision(args.frontend)
         frozen = freeze(args.frontend, input_revision=revision)
         frozen["target_slot"] = args.target_slot or None
         write_json(args.output, frozen)

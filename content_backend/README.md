@@ -2,6 +2,22 @@
 
 Event-driven Steam metadata enrichment backend.
 
+## Primary storage
+
+With the repository variable `RADAR_DATABASE_PRIMARY=1`, production jobs read
+their catalog, checkpoints and source evidence from Turso. Disposable JSON files
+are materialized from an acknowledged database snapshot before collection.
+Publication replays frozen evidence against the latest primary generation and
+commits it with compare-and-swap before updating the static Git projection.
+Database errors never fall back to Git data. The browser reads the projection
+and receives no database write credentials. `RADAR_DATABASE_MIGRATION_PAUSE=1`
+pauses production jobs during the initial import and activation.
+
+Twitch admissions keep immutable source evidence: new database revisions and
+previously imported Git revisions are resolved by the primary store, followed
+by the same enrollment and Steam identity checks. Manual registries remain
+versioned configuration, not mutable collection checkpoints.
+
 ## Responsibility
 
 This backend does **not** discover games and does **not** verify Followers.

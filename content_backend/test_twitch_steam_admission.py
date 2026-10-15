@@ -367,8 +367,9 @@ class DispatchContractTests(unittest.TestCase):
     @staticmethod
     def event_script():
         workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/steam-content-enrichment-dispatch.yml').read_text()
-        match = re.search(r"python - <<'PY'\n(.*?)          PY", workflow, flags=re.S)
-        return '\n'.join(line[10:] for line in match[1].splitlines())
+        if 'python -m radar_backend.jobs.validate_content_event' not in workflow:
+            raise AssertionError('The workflow must execute the tested event validator')
+        return 'from radar_backend.jobs.validate_content_event import main\nmain()'
 
     @staticmethod
     def snapshots():
@@ -404,7 +405,7 @@ class DispatchContractTests(unittest.TestCase):
                    'TWITCH_ADMISSION_JSON': 'null', 'EVENT_ACTION': 'steam_game_refresh',
                    'TWITCH_ADMISSION_PATH': str(Path(tmp) / 'proof.json')}
             with patch.dict(os.environ, env), patch('urllib.request.urlopen') as fetch:
-                with self.assertRaises(AssertionError):
+                with self.assertRaises(SystemExit):
                     exec(compile(self.event_script(), '<workflow event>', 'exec'), {})
                 fetch.assert_not_called()
             registry, discovery = self.snapshots()

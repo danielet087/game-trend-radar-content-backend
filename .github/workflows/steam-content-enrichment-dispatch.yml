@@ -31,9 +31,13 @@ concurrency:
 
 jobs:
   enrich-and-publish:
+    if: vars.RADAR_DATABASE_MIGRATION_PAUSE != '1'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
+      RADAR_DATABASE_PRIMARY: ${{ vars.RADAR_DATABASE_PRIMARY || '0' }}
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
       APPID: ${{ github.event.client_payload.appid || inputs.appid }}
       OFFICIAL_FOLLOWERS: ${{ github.event.client_payload.official_followers != null && format('{0}', github.event.client_payload.official_followers) || inputs.official_followers }}
       RELEASE_DATE: ${{ github.event.client_payload.release_date || inputs.release_date }}
@@ -66,37 +70,12 @@ jobs:
       - name: Install content backend dependencies
         run: python -m pip install --disable-pip-version-check -r content_backend/requirements.txt
 
-      - name: Validate qualified-game event
-        run: |
-          python - <<'PY'
-          import json,os,re,sys
-          from datetime import date
-          from pathlib import Path
-          sys.path.insert(0,"content_backend")
-          from urllib.request import urlopen
-          from twitch_steam_admission import normalize_twitch_admission, validate_twitch_snapshot
-          appid=os.environ.get("APPID","")
-          followers=os.environ.get("OFFICIAL_FOLLOWERS","")
-          release=os.environ.get("RELEASE_DATE","")
-          assert appid.isdigit() and int(appid)>0, appid
-          raw = json.loads(os.environ.get("TWITCH_ADMISSION_JSON") or "null")
-          proof = normalize_twitch_admission(raw, appid)
-          assert raw is None or proof is not None, "Invalid Twitch admission proof"
-          assert os.environ.get("EVENT_ACTION") != "steam_game_twitch_discovered" or proof is not None
-          assert followers.isdigit() and (int(followers)>=5000 or proof is not None), followers
-          assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", release) and date.fromisoformat(release), release
-          if proof is not None:
-              base = "https://raw.githubusercontent.com/danielet087/game-trend-radar/" + proof["source_frontend_commit"] + "/data/"
-              with urlopen(base + "twitch_tracking.json", timeout=30) as response:
-                  registry = json.load(response)
-              with urlopen(base + "twitch_steam_discovery.json", timeout=30) as response:
-                  discovery = json.load(response)
-              assert validate_twitch_snapshot(proof, registry, discovery), "Twitch admission source snapshot does not match"
-              Path(os.environ["TWITCH_ADMISSION_PATH"]).write_text(json.dumps(proof), encoding="utf-8")
-          print("CONTENT_EVENT_VALID", appid, followers, release, "twitch_source", proof is not None)
-          PY
+      - name: Validate qualified-game event against immutable source evidence
+        run: PYTHONPATH=content_backend python -m radar_backend.jobs.validate_content_event
 
       - name: Run offline content tests
+        env:
+          RADAR_DATABASE_PRIMARY: '0'
         run: |
           python -m py_compile content_backend/enrich_game.py
           PYTHONPATH=content_backend python -m unittest discover -s content_backend -p "test_*.py" -q
@@ -112,6 +91,9 @@ jobs:
           fi
           gh auth setup-git
           gh repo clone danielet087/game-trend-radar frontend -- --depth 1
+
+      - name: Load authoritative database inputs and establish collection baseline
+        run: PYTHONPATH=content_backend python -m radar_backend.jobs.prepare_state --frontend frontend
 
       - name: Validate catalog before collection writes
         run: PYTHONPATH=content_backend python -m radar_backend.jobs.publish_content validate --frontend frontend
