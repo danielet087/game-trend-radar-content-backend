@@ -112,7 +112,7 @@ jobs:
                   out.write(f"- 公開版本：`{receipt.published_revision}`\n")
               r = report.get("content_result") or {}
               if r:
-                  out.write(f"- 公開遊戲：{r.get('public_count', 0)}\n- 本輪嘗試：{r.get('attempted', 0)}\n- 補充成功：{r.get('enriched', 0)}\n- 仍待補齊：{r.get('pending_count', 0)}\n- 收集完整：{job.collection_complete}\n- 待補繁中翻譯：{r.get('description_translation_pending_count', 0)}\n")
+                  out.write(f"- 公開遊戲：{r.get('public_count', 0)}\n- 本輪嘗試：{r.get('attempted', 0)}\n- 補充成功：{r.get('enriched', 0)}\n- 仍待補齊：{r.get('pending_count', 0)}\n- 收集完整：{job.collection_complete}\n- 英文備援介紹：{r.get('description_english_fallback_count', 0)}\n")
                   for aid, gaps in (r.get('pending_enrichment') or {}).items():
                       out.write(f"- AppID {aid}: {', '.join(gaps)}\n")
           PYREPORT

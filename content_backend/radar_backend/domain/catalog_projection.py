@@ -51,6 +51,11 @@ FIELDS = (
     "categories",
     "categories_source",
     "categories_checked_at",
+    "short_description",
+    "short_description_en",
+    "short_description_language",
+    "short_description_source",
+    "description_source_url",
 )
 
 

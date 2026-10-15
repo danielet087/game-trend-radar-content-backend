@@ -34,23 +34,24 @@ class DescriptionTests(unittest.TestCase):
         official = description_fields(4705510, source, "官方已經提供繁體中文的遊戲介紹。", source)
         self.assertEqual(official["short_description_source"], "steam_tchinese")
         changed = description_fields(4705510, source + " New feature.", source, source)
-        self.assertEqual(changed["short_description_source"], "unavailable")
-        self.assertEqual(changed["short_description"], "")
-        self.assertEqual(changed["short_description_language"], "")
+        self.assertEqual(changed["short_description_source"], "steam_english")
+        self.assertEqual(changed["short_description"], source + " New feature.")
+        self.assertEqual(changed["short_description_language"], "en")
 
     def test_unsupported_language_is_not_mislabeled(self):
         for text in ("English description", "物語の世界を冒険するゲームです", ""):
             fields = description_fields(123, "English", text, text)
-            self.assertEqual(fields["short_description_source"], "unavailable")
-            self.assertEqual(fields["short_description"], "")
+            self.assertEqual(fields["short_description_source"], "steam_english")
+            self.assertEqual(fields["short_description"], "English")
+            self.assertEqual(fields["short_description_language"], "en")
 
-    def test_legacy_refresh_cannot_overwrite_chinese_and_explicit_unavailable_clears_it(self):
+    def test_legacy_or_unavailable_refresh_cannot_erase_chinese(self):
         chinese = description_fields(123, "English", "探索世界，享受冒險。", None)
         self.assertEqual(merge_description_fields(chinese, {"short_description": "English again"}), chinese)
         unavailable = description_fields(123, "Changed English", "Changed English", None)
         merged = merge_description_fields(chinese, unavailable)
-        self.assertEqual(merged["short_description"], "")
-        self.assertEqual(merged["short_description_language"], "")
+        self.assertEqual(merged["short_description"], chinese["short_description"])
+        self.assertEqual(merged["short_description_language"], "zh-TW")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "excluded_appids.json").write_text('{"appids": []}')
@@ -58,8 +59,8 @@ class DescriptionTests(unittest.TestCase):
             upsert_sharded(root, {**base, **chinese}, base["release_start"])
             upsert_sharded(root, {**base, **unavailable}, base["release_start"], force=True)
             row = json.loads((root / "games/123.json").read_text())
-            self.assertEqual(row["short_description"], "")
-            self.assertEqual(row["short_description_source"], "unavailable")
+            self.assertEqual(row["short_description"], chinese["short_description"])
+            self.assertEqual(row["short_description_source"], "steam_tchinese")
 
     def test_collection_check_does_not_retry_forever_for_unavailable_chinese(self):
         base = {"appid": 123, "followers": 6000, "release_start": "2030-01-01", "header_image": "known",
