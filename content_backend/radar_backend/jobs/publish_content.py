@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -15,6 +16,11 @@ from radar_backend.state.json_documents import write_json
 
 
 def _revision(frontend: Path) -> str:
+    if os.environ.get("RADAR_DATABASE_PRIMARY") == "1":
+        revision = os.environ.get("RADAR_INPUT_REVISION")
+        if not revision:
+            raise RuntimeError("Primary inputs must be hydrated before collection")
+        return revision
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=frontend, check=True,
                           capture_output=True, text=True).stdout.strip()
 
