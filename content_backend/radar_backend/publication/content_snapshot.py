@@ -414,15 +414,15 @@ class FrozenContentPublication:
                                            generated_at=self.frozen["prepared_at"], now=self.now)
         catalog._rebuild_small_indexes(data_dir, generated_at=self.frozen["prepared_at"], now=self.now)
         pending = {}
-        translation_pending = []
+        english_fallback = []
         for appid, source in qualified.items():
             path = data_dir / "games" / f"{appid}.json"
             record = load_json(path) if path.is_file() else None
             gaps = metadata_gaps(record, source)
             if gaps:
                 pending[str(appid)] = gaps
-            if not record or record.get("short_description_language") != "zh-TW":
-                translation_pending.append(appid)
+            if record and record.get("short_description_language") == "en":
+                english_fallback.append(appid)
         collected = self.frozen["collected_status"]
         status_path = data_dir / "content_refresh_status.json"
         latest = load_json(status_path) if status_path.is_file() else {}
@@ -434,12 +434,13 @@ class FrozenContentPublication:
                 failures[key] = value
         metadata = latest if ((aware_time(latest.get("generated_at")) or minimum)
                               > (aware_time(collected.get("generated_at")) or minimum)) else collected
+        metadata = {key: value for key, value in metadata.items() if key not in {"description_translation_pending", "description_translation_pending_count"}}
         result = {**metadata, "qualified_master": len(qualified), "pending_enrichment": pending,
                   "pending_count": len(pending), "public_count": load_json(data_dir / "index.json")["game_count"],
                   "complete": collected.get("complete") is True and not pending and not superseded,
                   "actual_catalog_complete": not pending, "superseded_appids": superseded,
-                  "description_translation_pending": translation_pending,
-                  "description_translation_pending_count": len(translation_pending),
+                  "description_english_fallback": english_fallback,
+                  "description_english_fallback_count": len(english_fallback),
                   "failures": {key: value for key, value in failures.items() if key in pending}}
         write_json(data_dir / "content_refresh_status.json", result)
         return result

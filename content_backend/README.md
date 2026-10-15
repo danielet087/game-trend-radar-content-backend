@@ -56,3 +56,21 @@ directory and its workflow, then changing Backend A's dispatch target.
 ## 分層架構
 
 內容補充與對帳的 domain、application、HTTP adapter、JSON state、publication 及 job 已放入 `radar_backend/`。舊 CLI 與函數入口維持相容。責任分配、執行方式及保留債務見 [後端架構說明](../docs/backend-architecture.md)。
+
+## Independent description refresh
+
+`localize_descriptions.py` refreshes only due descriptions, with fresh English,
+Traditional Chinese and Simplified Chinese Store Browse requests in batches of
+25. Each run is bounded to 100 games / 540 seconds by default. Official Chinese
+always replaces the English fallback, even when English has not changed. Existing
+Chinese and its successful check timestamp survive transport failures; retry
+checkpoints are persisted for six hours and a 429 stops the current run.
+
+The description workflow is dispatched every six hours by the existing
+Cloudflare scheduler and also runs once after relevant main-branch changes.
+It does not fetch Followers, eligibility, artwork, tags or release dates. The
+frozen publication adapter updates only description fields on the latest
+frontend and publishes all catalog
+projections plus retry state in one acknowledged commit. See the repository
+README for source precedence and refresh intervals. English is a valid result
+when Chinese is unavailable; no automatic machine translation runs.

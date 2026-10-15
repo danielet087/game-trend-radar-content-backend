@@ -68,7 +68,7 @@ class DescriptionDomainTests(unittest.TestCase):
             dict(zip(DESCRIPTION_KEYS, ("", "English", "", "steam_tchinese"))),
         )
 
-    def test_unavailable_clears_all_description_fields(self):
+    def test_unavailable_preserves_last_valid_chinese_atomically(self):
         existing = dict(
             zip(DESCRIPTION_KEYS, ("探索世界", "Old", "zh-TW", "steam_tchinese"))
         )
@@ -77,7 +77,7 @@ class DescriptionDomainTests(unittest.TestCase):
         result = domain.merge_description_fields(existing, incoming)
         self.assertEqual(result["name"], "Updated")
         self.assertEqual(
-            [result[key] for key in DESCRIPTION_KEYS], ["", "", "", "unavailable"]
+            [result[key] for key in DESCRIPTION_KEYS], [existing[key] for key in DESCRIPTION_KEYS]
         )
         self.assertEqual(existing["short_description"], "探索世界")
 
@@ -221,7 +221,8 @@ class DescriptionApplicationTests(unittest.TestCase):
             }
         }
         result, calls = self.invoke(("New English", None, None), document=document)
-        self.assertEqual(result["short_description_source"], "unavailable")
+        self.assertEqual(result["short_description_source"], "steam_english")
+        self.assertEqual(result["short_description_language"], "en")
         self.assertEqual(
             calls[-2:], [("translations",), ("fingerprint", "New English")]
         )
@@ -265,12 +266,12 @@ class DescriptionApplicationTests(unittest.TestCase):
                 ("English", None, None), error=OSError("missing translation document")
             )
 
-    def test_converter_empty_result_retains_official_source_and_empty_language(self):
+    def test_converter_empty_result_uses_available_english(self):
         result, calls = self.invoke(
             ("English", "探索世界", None), convert=lambda value: ""
         )
-        self.assertEqual(result["short_description_source"], "steam_tchinese")
-        self.assertEqual(result["short_description_language"], "")
+        self.assertEqual(result["short_description_source"], "steam_english")
+        self.assertEqual(result["short_description_language"], "en")
         self.assertNotIn(("translations",), calls)
 
 
@@ -310,7 +311,7 @@ class DescriptionFacadeTests(unittest.TestCase):
         for module in self.modules:
             with self.subTest(module=module.__name__):
                 self.assertEqual(module.translations(), expected)
-                self.assertEqual(module.CONVERTER.convert("鼠标和硬盘"), "滑鼠和硬碟")
+                self.assertEqual(module.CONVERTER.convert("鼠标和硬盘"), "鼠標和硬盤")
 
     def test_cache_preserves_mutable_reference_until_clear(self):
         for module in self.modules:
@@ -421,7 +422,7 @@ class DescriptionFacadeTests(unittest.TestCase):
                     module.description_fields(123, "English", None, None)[
                         "short_description_source"
                     ],
-                    "unavailable",
+                    "steam_english",
                 )
 
     def test_clean_callback_is_bound_once_before_the_three_value_map(self):
@@ -473,6 +474,9 @@ class DescriptionFacadeTests(unittest.TestCase):
 def _description_case(
     english, traditional, simplified, document, expected_source, expected_text
 ):
+    if expected_source == "unavailable" and domain.clean_description(english):
+        expected_source, expected_text = "steam_english", domain.clean_description(english)
+
     def test(self):
         for module in self.modules:
             with (
@@ -486,7 +490,7 @@ def _description_case(
                 self.assertEqual(fields["short_description"], expected_text)
                 self.assertEqual(
                     fields["short_description_language"],
-                    "zh-TW" if expected_text else "",
+                    ("en" if expected_source == "steam_english" else "zh-TW") if expected_text else "",
                 )
                 self.assertEqual(
                     fields["short_description_en"], domain.clean_description(english)

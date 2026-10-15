@@ -252,17 +252,17 @@ def reconcile(
             pending[str(appid)] = gaps
         if record and not _shard_in_sync(data_dir, record):
             raise RuntimeError(f"Public catalog inconsistent for AppID {appid}")
-    translation_pending = [
+    english_fallback = [
         appid
         for appid in qualified
         if (read_json(data_dir / "games" / f"{appid}.json", {}) or {}).get(
             "short_description_language"
         )
-        != "zh-TW"
+        == "en"
     ]
     result = {
-        "description_translation_pending": translation_pending,
-        "description_translation_pending_count": len(translation_pending),
+        "description_english_fallback": english_fallback,
+        "description_english_fallback_count": len(english_fallback),
         "generated_at": utc_now(),
         "qualified_master": len(qualified),
         **counts,

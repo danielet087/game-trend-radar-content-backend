@@ -1,0 +1,127 @@
+name: Refresh Steam Chinese descriptions
+run-name: "Steam descriptions | slot=${{ inputs.target_slot || 'manual' }} | source=${{ inputs.trigger_source || github.event_name }}"
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/steam-description-refresh.yml
+      - content_backend/localize_descriptions.py
+      - content_backend/radar_backend/domain/description_refresh.py
+      - content_backend/radar_backend/domain/localized_descriptions.py
+      - content_backend/radar_backend/adapters/localized_descriptions.py
+      - content_backend/radar_backend/application/localized_descriptions.py
+      - content_backend/radar_backend/jobs/publish_descriptions.py
+      - content_backend/radar_backend/publication/description_snapshot.py
+  workflow_dispatch:
+    inputs:
+      target_slot:
+        description: External scheduler slot identifier
+        required: false
+        type: string
+        default: ''
+      trigger_source:
+        description: Trigger source
+        required: false
+        type: string
+        default: manual
+permissions:
+  contents: read
+concurrency:
+  group: steam-description-refresh
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      TARGET_SLOT: ${{ inputs.target_slot }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and verify description refresh
+        run: |
+          python -m pip install --disable-pip-version-check -r content_backend/requirements.txt
+          PYTHONPATH=content_backend python -m unittest discover -s content_backend -p 'test_*.py' -q
+      - name: Checkout public frontend with existing write token
+        env:
+          GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo '::error::Missing FRONTEND_REPO_TOKEN'; exit 1; }
+          gh auth setup-git
+          gh repo clone danielet087/game-trend-radar frontend -- --depth 1
+      - name: Skip a slot whose description checkpoint was already published
+        id: slot
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          manifest = Path('frontend/data/publication/steam_descriptions.json')
+          slot = os.environ.get('TARGET_SLOT', '')
+          saved = json.loads(manifest.read_text()) if manifest.is_file() else {}
+          skip = bool(slot and saved.get('target_slot') == slot)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"skip={'true' if skip else 'false'}\n")
+          PY
+      - name: Validate catalog before description-only writes
+        if: steps.slot.outputs.skip != 'true'
+        run: PYTHONPATH=content_backend python -m radar_backend.jobs.publish_content validate --frontend frontend
+      - name: Collect due descriptions in fresh 25-game three-language batches
+        if: steps.slot.outputs.skip != 'true'
+        run: |
+          PYTHONPATH=content_backend python -u content_backend/localize_descriptions.py \
+            --data-dir frontend/data --max-games 100 --max-seconds 540 \
+            --cache-dir "$RUNNER_TEMP/steam-description-evidence"
+      - name: Freeze descriptions and retry checkpoint
+        if: steps.slot.outputs.skip != 'true'
+        run: |
+          PYTHONPATH=content_backend python -m radar_backend.jobs.publish_descriptions freeze \
+            --frontend frontend --output "$RUNNER_TEMP/steam-description-batch.json" \
+            --target-slot "$TARGET_SLOT"
+      - name: Publish frozen descriptions against latest frontend
+        if: steps.slot.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+        run: |
+          PYTHONPATH=content_backend python -m radar_backend.jobs.publish_descriptions publish \
+            --frontend frontend --frozen "$RUNNER_TEMP/steam-description-batch.json" \
+            --receipt "$RUNNER_TEMP/steam-description-publication.json" \
+            --target-slot "$TARGET_SLOT"
+      - name: Preserve description publication receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-descriptions-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/steam-description-publication.json
+            ${{ runner.temp }}/steam-description-batch.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Report description queue
+        if: always()
+        env:
+          SLOT_SKIPPED: ${{ steps.slot.outputs.skip }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'steam-description-publication.json'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('\n## Steam 繁中簡介\n')
+              if os.environ.get('SLOT_SKIPPED') == 'true':
+                  output.write('- 同一排程 slot 已發布，本輪跳過\n')
+              elif not path.is_file():
+                  output.write('- 尚未取得本輪發布確認\n')
+              else:
+                  report = json.loads(path.read_text())
+                  result = report.get('description_result') or {}
+                  output.write(f"- 發布狀態：{report['job_result']['status']}\n")
+                  output.write(f"- 成功更新：{len(result.get('updated_appids', []))}\n")
+                  output.write(f"- 尚待處理：{result.get('pending_count', 0)}\n")
+                  output.write(f"- 失敗待重試：{len(result.get('retry_pending_appids', []))}\n")
+                  output.write(f"- 下次到期：{result.get('next_due_at')}\n")
+          PY

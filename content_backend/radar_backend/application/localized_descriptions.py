@@ -33,4 +33,6 @@ def description_fields(
             and is_chinese(translated.get("text", ""))
         ):
             description, source = convert(translated["text"]), "editorial_zh_tw"
+    if not description and en:
+        description, source = en, "steam_english"
     return localized_fields(en, description, source)

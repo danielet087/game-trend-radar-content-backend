@@ -39,17 +39,32 @@ python content_backend/localize_taxonomy.py --data-dir /path/to/frontend/data --
 
 ## 繁體中文介紹
 
-Store Browse 繁中介紹優先，其次是官方簡中經 OpenCC `s2twp` 轉換。僅英文的現有 7 款，使用 `descriptions_zh_tw.json` 中對照原文 SHA-256 的本站翻譯；Steam 原文變更就不沿用舊翻譯。官方中文一旦提供，會優先取代本站翻譯。
+同一 AppID 的 Steam 官方繁中優先，其次是官方簡中經 OpenCC `s2tw` 轉成繁體字。沒有官方中文時，保留既有、原文 SHA-256 相符的本站翻譯，再直接顯示 Steam 英文原文。沒有任何介紹時才標記為尚未提供，不進行自動機器翻譯。原文與翻譯分開保存，簡介的語言不代表遊戲本身支援中文。
 
-`short_description` 僅存可顯示的繁中，原文另存 `short_description_en`，搭配 `short_description_language=zh-TW`、`short_description_source` 與 `description_checked_at`。完整欄位一起合併，舊格式英文事件不能覆蓋已確認的繁中。沒有可用中文時不假裝翻譯成功，前端顯示「繁體中文遊戲介紹整理中」；對帳結果的 `description_translation_pending` 列出待翻譯 AppID，與 Steam 請求失敗的重試佇列分開。
+`short_description` 保存顯示用繁中或英文，`short_description_en` 保存新鮮英文原文，並記錄 `short_description_language`、`short_description_source`、來源網址及 `description_checked_at`。每一輪都取得英文、繁中、簡中三語，不以原文未變、已有英文或已填寫檢查時間作為永久跳過的理由。Steam 日後新增官方中文會自動取代英文。
 
-可單獨補介紹，無須重查 Followers、發售日、圖片或 TAG：
+簡介有獨立排程與到期佇列，不依賴 Followers、成長追蹤、圖片、TAG 或一般內容缺漏。既有 Cloudflare 排程控制器在台灣時間 01:30、07:30、13:30、19:30 觸發 `steam-description-refresh.yml`，每輪最多 100 款、每批 25 款，在 9 分鐘收集預算後停止啟動下一批。合併到 main 的簡介流程更新也會觸發一次，便於立即驗證及補資料。
+
+| 狀態 | 官方簡介回查間隔 |
+| --- | --- |
+| 缺官方中文，距上市超過 60 天 | 7 天 |
+| 缺官方中文，上市前 60 天至上市後 30 天 | 1 天 |
+| 已有官方繁中或簡中 | 7 天 |
+| 上市超過 30 天的歷史詳情頁 | 30 天 |
+
+`description_refresh_status.json` 保存每款到期與重試 checkpoint。傳輸失敗或三語回應不完整時，保留舊的有效中文與成功檢查時間，6 小時後重試；429 會停止當輪，其餘未處理項目下輪續跑。英文是有效介紹，依正常每日／每週／每月間隔回查，不因缺中文而每 6 小時重抓。
+
+英文備援使用 `short_description_language=en`、`short_description_source=steam_english`，中文則維持 `zh-TW` 與各自官方／人工來源。既有有效官方中文在暫時缺中文時仍保留；舊機器翻譯不能優先於英文。官方日後補上中文，下一次到期回查就會升級。
+
+可單獨執行介紹更新：
 
 ```sh
-python content_backend/localize_descriptions.py --data-dir /path/to/frontend/data
+python content_backend/localize_descriptions.py --data-dir /path/to/frontend/data --max-games 100 --max-seconds 540
 ```
 
-此指令將繁中／簡中分批查詢（每批 25 款），更新 AppID、月份及備援資料；既有收錄條件與統計值保持不變。`--cache-dir` 僅用於同一輪重試，需指定新的目錄以重新取得 Steam 原文。
+`--force` 可忽略到期時間，但仍遵守每輪數量上限。`--cache-dir` 只輸出本輪診斷資料，絕不讀取舊三語回應來冒充新鮮官方查詢。
+
+簡介、月份、清單、catalog 與 checkpoint 在同一 commit 發布。發布衝突使用共用 `publish_with_retry`，僅重播已凍結的簡介欄位，不重新呼叫 Steam，也不覆蓋併發更新的 Followers、日期或其他內容。較新的官方簡介檢查時間優先。發布收據保存真實 Git commit，`data/publication/steam_descriptions.json` 保存最後發布的排程 slot 以避免同一 slot 重做。
 
 ## 同步契約
 

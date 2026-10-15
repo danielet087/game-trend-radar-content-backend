@@ -203,7 +203,7 @@ assert not blocked.intersection(sys.modules)
             shard = json.loads((data / "games/123.json").read_text())
             self.assertEqual(projection["version"], 3)
             self.assertEqual(projection["games"][0]["categories"], shard["categories"])
-            self.assertNotIn("short_description", projection["games"][0])
+            self.assertEqual(projection["games"][0]["short_description"], record["short_description"])
             self.assertEqual(
                 json.loads((data / "lists/upcoming.json").read_text())["appids"], [123]
             )
@@ -225,12 +225,12 @@ assert not blocked.intersection(sys.modules)
                         "basic_info": {"short_description": "這是更新的官方中文介紹"}
                     }
                 }
-                for language in ("tchinese", "schinese")
+                for language in ("english", "tchinese", "schinese")
             }
             with patch.object(
                 maintenance, "fetch_locales", return_value=locales
-            ), patch.object(maintenance, "utc_now", return_value=STAMP):
-                result = maintenance.localize(data)
+            ):
+                result = maintenance.localize(data, force=True, now=NOW)
             after = json.loads((data / "games/123.json").read_text())
             description_fields = {
                 "short_description",
@@ -238,13 +238,15 @@ assert not blocked.intersection(sys.modules)
                 "short_description_language",
                 "short_description_source",
                 "description_checked_at",
+                "description_next_check_at",
             }
             self.assertEqual(
                 {k: v for k, v in after.items() if k not in description_fields},
                 {k: v for k, v in before.items() if k not in description_fields},
             )
             self.assertEqual(after["short_description"], "這是更新的官方中文介紹")
-            self.assertEqual(result, {"steam_tchinese": 1})
+            self.assertEqual(result["sources"], {"steam_tchinese": 1})
+            self.assertEqual(result["updated_appids"], [123])
             self.assertNotEqual(
                 json.loads((data / "catalog.json").read_text())["revision"], revision
             )

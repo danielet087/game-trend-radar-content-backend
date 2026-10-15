@@ -15,7 +15,7 @@ from radar_backend.application import localized_descriptions as _application
 from radar_backend.domain import localized_descriptions as _domain
 from radar_backend.state import description_translations as _state
 
-CONVERTER = OpenCC("s2twp")
+CONVERTER = OpenCC("s2tw")
 HAN = _domain.HAN
 KANA = _domain.KANA
 
@@ -38,7 +38,7 @@ def translations() -> dict:
 def description_fields(
     appid: int, english: object, traditional: object, simplified: object
 ) -> dict:
-    return _application.description_fields(
+    result = _application.description_fields(
         appid,
         english,
         traditional,
@@ -52,7 +52,11 @@ def description_fields(
         ),
     )
 
+    if result.get("short_description"):
+        result["description_source_url"] = f"https://store.steampowered.com/app/{int(appid)}/"
+    return result
+
 
 def merge_description_fields(existing: dict, incoming: dict) -> dict:
-    """Keep locale and text atomic; explicit unavailable results clear stale text."""
+    """Keep descriptions and their source evidence atomic, preserving valid Chinese."""
     return _domain.merge_description_fields(existing, incoming)
