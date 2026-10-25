@@ -256,6 +256,7 @@ assert not blocked.intersection(sys.modules)
         self,
     ):
         import localize_taxonomy as maintenance
+        from radar_backend.publication import catalog
         from radar_backend.publication.content_snapshot import validate_snapshot
 
         with tempfile.TemporaryDirectory() as directory:
@@ -267,6 +268,8 @@ assert not blocked.intersection(sys.modules)
                 maintenance.requests, "Session", return_value=session
             ), patch.object(maintenance.time, "sleep"), patch.object(
                 maintenance, "utc_now", return_value=STAMP
+            ), patch.object(
+                catalog, "datetime", FrozenDateTime
             ):
                 result = maintenance.localize(data)
             after = json.loads((data / "games/123.json").read_text())
