@@ -78,7 +78,7 @@ def taxonomy_fields(payload: dict | None, appid: int) -> dict:
     return _taxonomy_fields(payload, appid, utc_now())
 
 
-def build_record(session, *, appid: int, followers: int, event_release_date: str,
+def build_record(session, *, appid: int, followers: int | None, event_release_date: str,
                  follower_checked_at: str | None, allow_historical: bool = False,
                  twitch_admission: dict | None = None) -> dict:
     ports = EnrichmentPorts(browse_one, appdetails, fetch_store_taxonomy,
@@ -112,7 +112,7 @@ def upsert_document(path: Path, record: dict, event_release_date: str, *, force:
             and existing.get("header_image")
             and isinstance(existing.get("language_support"), dict)
             and isinstance(existing.get("tags"), list)
-            and (int(existing.get("followers", 0)) >= 5000 or is_twitch_qualified(existing))
+            and (int(existing.get("followers") or 0) >= 5000 or is_twitch_qualified(existing))
             and existing.get('twitch_admission') == record.get('twitch_admission')
             and (not has_verified_categories(record) or (
                 has_verified_categories(existing) and existing['categories'] == record['categories']))

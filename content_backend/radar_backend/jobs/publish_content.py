@@ -33,7 +33,7 @@ def main() -> None:
     validate.add_argument("--master", type=Path)
     enrich = sub.add_parser("freeze-enrichment")
     enrich.add_argument("--appid", type=int, required=True)
-    enrich.add_argument("--followers", type=int, required=True)
+    enrich.add_argument("--followers", type=lambda value: None if value == "" else int(value), required=True)
     enrich.add_argument("--release-date", required=True)
     enrich.add_argument("--force", action="store_true")
     enrich.add_argument("--event-action", default="")

@@ -24,9 +24,8 @@ def metadata_gaps(
     # A fresh date audit can finish while this run still holds an older master.
     source = preserve_release(record, source)
     gaps = []
-    if record.get("release_start") != source["release_start"] or int(
-        record.get("followers") or 0
-    ) != int(source["followers"]):
+    if (record.get("release_start") != source["release_start"]
+            or record.get("followers") != source["followers"]):
         gaps.append("source_changed")
     admission = normalize_twitch_admission(
         source.get("twitch_admission"), source.get("appid")
@@ -92,7 +91,7 @@ def metadata_gaps(
 def qualified_source(
     source: dict,
     appid: int,
-    followers: int,
+    followers: int | None,
     day,
     *,
     historical: bool,
@@ -100,7 +99,7 @@ def qualified_source(
 ) -> bool:
     return (
         appid > 0
-        and (followers >= 5000 or is_twitch_qualified(source))
+        and (is_twitch_qualified(source) or type(followers) is int and followers >= 5000)
         and valid_date(day)
         and appid not in blocked
         and (source.get("release_display_precision") == "date_full" or historical)
