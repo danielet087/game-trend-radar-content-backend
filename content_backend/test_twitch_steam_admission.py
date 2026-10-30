@@ -87,6 +87,27 @@ class TwitchAdmissionTests(unittest.TestCase):
                         {'follower_checked_at': None}, {'followers': False}]:
             self.assertFalse(is_twitch_qualified(dict(source, **changes)))
 
+    def test_missing_followers_can_be_enriched_and_published_without_inventing_zero(self):
+        from radar_backend.publication.content_snapshot import strict_catalog, validate_snapshot
+        record = build(followers=None, follower_checked_at=None)
+        self.assertTrue(is_twitch_qualified(record))
+        self.assertIsNone(record['followers'])
+        self.assertIsNone(record['follower_checked_at'])
+        self.assertIsNone(record['follower_source'])
+        self.assertFalse(record['official_ge5000'])
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / 'data'
+            data.mkdir()
+            (data / 'excluded_appids.json').write_text(json.dumps({'appids': []}))
+            self.assertTrue(upsert_sharded(data, record, record['release_start']))
+            strict_catalog(data, require_index=True)
+            validate_snapshot(data)
+            public = json.loads((data / 'games/123.json').read_text())
+            self.assertIsNone(public['followers'])
+            self.assertFalse(upsert_sharded(data, record, record['release_start']))
+        with self.assertRaises(RuntimeError):
+            build(followers=None, follower_checked_at=None, twitch_admission=None)
+
     def test_low_count_has_real_count_and_does_not_claim_5000(self):
         record = build(followers=8)
         self.assertEqual(record['followers'], 8)

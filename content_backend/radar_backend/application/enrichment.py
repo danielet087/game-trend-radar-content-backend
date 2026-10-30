@@ -20,7 +20,7 @@ class EnrichmentPorts:
     now: Callable
 
 
-def build_record(session, *, ports: EnrichmentPorts, appid: int, followers: int,
+def build_record(session, *, ports: EnrichmentPorts, appid: int, followers: int | None,
                  event_release_date: str, follower_checked_at: str | None,
                  allow_historical: bool = False, twitch_admission: dict | None = None) -> dict:
     admission = validate_enrichment_input(appid, followers, twitch_admission)

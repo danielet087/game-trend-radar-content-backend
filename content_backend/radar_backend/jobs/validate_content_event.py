@@ -27,7 +27,9 @@ def validate_event(environment, *, storage=None, opener=None):
         raise ValueError("Invalid Twitch admission proof")
     if environment.get("EVENT_ACTION") == "steam_game_twitch_discovered" and proof is None:
         raise ValueError("Missing Twitch admission proof")
-    if not followers.isascii() or not followers.isdigit() or (int(followers) < 5000 and proof is None):
+    if not ((followers == "" and proof is not None) or (
+        followers.isascii() and followers.isdigit() and (int(followers) >= 5000 or proof is not None)
+    )):
         raise ValueError("Invalid official follower evidence")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", release) or date.fromisoformat(release).isoformat() != release:
         raise ValueError("Invalid release date")

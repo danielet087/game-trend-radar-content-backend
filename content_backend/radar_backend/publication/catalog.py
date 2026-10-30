@@ -64,7 +64,7 @@ def _rebuild_small_indexes(data_dir: Path, *, generated_at: str | None = None, n
             continue
         try:
             appid = int(row.get("appid"))
-            followers = int(row.get("followers"))
+            followers = int(row.get("followers") or 0)
         except (TypeError, ValueError):
             continue
         release = row.get("release_start")
@@ -85,16 +85,16 @@ def _rebuild_small_indexes(data_dir: Path, *, generated_at: str | None = None, n
 
     upcoming = [
         int(row["appid"]) for row in rows
-        if row["release_start"] >= today_s and (int(row["followers"]) >= 5000 or is_twitch_qualified(row))
+        if row["release_start"] >= today_s and (int(row["followers"] or 0) >= 5000 or is_twitch_qualified(row))
     ]
     released = [
         int(row["appid"]) for row in rows
         if released_from <= row["release_start"] < today_s
         and (
-            int(row["followers"]) >= 5000
+            int(row["followers"] or 0) >= 5000
             or is_twitch_qualified(row)
             or (
-                int(row["followers"]) > 3000
+                int(row["followers"] or 0) > 3000
                 and row.get("recent_source") in {"tracked_release", "direct_release"}
             )
         )
@@ -153,11 +153,11 @@ def _shard_in_sync(data_dir: Path, record: dict, *, now: datetime | None = None)
         fallback = next(x for x in legacy["games"] if int(x["appid"]) == appid)
         today = (now or datetime.now(TAIPEI)).astimezone(TAIPEI).date()
         day = datetime.fromisoformat(release).date()
-        expected_upcoming = day >= today and (int(record["followers"]) >= 5000 or is_twitch_qualified(record))
+        expected_upcoming = day >= today and (int(record["followers"] or 0) >= 5000 or is_twitch_qualified(record))
         expected_released = (
             today - timedelta(days=30) <= day < today
-            and (int(record["followers"]) >= 5000 or is_twitch_qualified(record) or (
-                int(record["followers"]) > 3000
+            and (int(record["followers"] or 0) >= 5000 or is_twitch_qualified(record) or (
+                int(record["followers"] or 0) > 3000
                 and record.get("recent_source") in {"tracked_release", "direct_release"}
             ))
         )
@@ -216,6 +216,9 @@ def upsert_sharded(
     record = keep_newer_release(existing, record)
     if 'twitch_admission' in record and not is_twitch_qualified(record):
         raise RuntimeError(f'AppID {appid} has an invalid Twitch-source Steam qualification')
+    if (record.get('followers') is None and type(existing.get('followers')) is int
+            and existing.get('follower_checked_at')):
+        raise RuntimeError(f'Stale official event for AppID {appid}; preserving verified Followers')
     # An older queued event must not roll back a more recent official result.
     try:
         old_at = datetime.fromisoformat(str(existing.get("follower_checked_at")).replace("Z", "+00:00"))
@@ -231,7 +234,7 @@ def upsert_sharded(
         and existing.get("header_image")
         and isinstance(existing.get("language_support"), dict)
         and isinstance(existing.get("tags"), list)
-        and (int(existing.get("followers", 0)) >= 5000 or is_twitch_qualified(existing))
+        and (int(existing.get("followers") or 0) >= 5000 or is_twitch_qualified(existing))
         and existing.get('twitch_admission') == record.get('twitch_admission')
         and (not has_verified_categories(record) or (
             has_verified_categories(existing) and existing['categories'] == record['categories']))
@@ -247,6 +250,8 @@ def upsert_sharded(
         return True
 
     merged = preserve_taxonomy(existing, merge_description_fields(existing, record))
+    if record.get('followers') is None:
+        merged.update(followers=None, follower_checked_at=None, follower_source=None)
     merged["content_enrichment_signature"] = signature
     merged["storage_version"] = 2
     _write_json(path, merged)

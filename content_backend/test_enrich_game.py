@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 import sys
 import tempfile
 import types
@@ -185,7 +186,7 @@ class EnrichmentTests(unittest.TestCase):
             (data / "games" / "2548880.json").write_text(
                 json.dumps(record), encoding="utf-8",
             )
-            self.assertTrue(upsert_sharded(data, record, "2026-10-27"))
+            self.assertTrue(upsert_sharded(data, record, "2026-10-27", now=datetime(2026, 10, 26, tzinfo=timezone.utc)))
             month = json.loads((data / "calendar" / "2026-10.json").read_text(encoding="utf-8"))
             index = json.loads((data / "index.json").read_text(encoding="utf-8"))
             legacy = json.loads((data / "steam_upcoming.json").read_text(encoding="utf-8"))
@@ -194,7 +195,7 @@ class EnrichmentTests(unittest.TestCase):
             self.assertEqual(index["game_count"], legacy["count"])
             self.assertEqual(index["game_count"], 1)
             self.assertIn(2548880, upcoming["appids"])
-            self.assertFalse(upsert_sharded(data, record, "2026-10-27"))
+            self.assertFalse(upsert_sharded(data, record, "2026-10-27", now=datetime(2026, 10, 26, tzinfo=timezone.utc)))
 
 
     def test_sharded_upsert_never_readds_audited_adult_title(self):

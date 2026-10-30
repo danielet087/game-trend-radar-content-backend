@@ -54,6 +54,20 @@ class PrimaryInputTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 _revision(Path("missing"))
 
+    def test_missing_followers_event_still_requires_immutable_twitch_proof(self):
+        admission = proof()
+        registry, discovery = evidence(admission)
+        store = Mock()
+        store.read_files.return_value = ({}, {path: json.dumps(value).encode()
+            for path, value in zip(EVIDENCE_PATHS, (registry, discovery))})
+        env = {"RADAR_DATABASE_PRIMARY": "1", "APPID": "123", "OFFICIAL_FOLLOWERS": "",
+               "RELEASE_DATE": "2030-01-01", "TWITCH_ADMISSION_JSON": json.dumps(admission),
+               "EVENT_ACTION": "steam_game_twitch_discovered"}
+        self.assertEqual(validate_event(env, storage=store), admission)
+        env['TWITCH_ADMISSION_JSON'] = 'null'
+        with self.assertRaises(ValueError):
+            validate_event(env, storage=store)
+
     def test_legacy_commit_proof_uses_exact_immutable_database_evidence(self):
         admission = proof()
         registry, discovery = evidence(admission)

@@ -125,11 +125,13 @@ def official_chinese_title(value: object) -> str | None:
     return value if value and len(value) <= 240 and HAN.search(value) else None
 
 
-def validate_enrichment_input(appid: int, followers: int, twitch_admission: dict | None) -> dict | None:
+def validate_enrichment_input(appid: int, followers: int | None, twitch_admission: dict | None) -> dict | None:
     admission = normalize_twitch_admission(twitch_admission, appid)
     if twitch_admission is not None and admission is None:
         raise RuntimeError('Invalid Twitch Steam admission proof')
-    if type(followers) is not int or followers < 0 or (followers < 5000 and admission is None):
+    if not ((followers is None and admission is not None) or (
+        type(followers) is int and followers >= 0 and (followers >= 5000 or admission is not None)
+    )):
         raise RuntimeError('Steam Followers must be verified; low counts require Twitch admission')
     return admission
 
@@ -164,7 +166,7 @@ class ContentSnapshot:
 
 
 def record_from_snapshot(
-    snapshot: ContentSnapshot, *, appid: int, followers: int,
+    snapshot: ContentSnapshot, *, appid: int, followers: int | None,
     event_release_date: str, follower_checked_at: str | None,
     allow_historical: bool, admission: dict | None, taxonomy: dict,
     descriptions: dict, checked_at: str, observed_now: datetime, convert,
@@ -304,9 +306,9 @@ def record_from_snapshot(
         "release_timestamp_taipei_date": release_timestamp_taipei_date,
         "release_date_conflict": release_date_conflict,
         "followers": followers,
-        "follower_checked_at": follower_checked_at,
-        "follower_source": "Steam Community XML memberCount",
-        "official_ge5000": followers >= 5000,
+        "follower_checked_at": follower_checked_at if followers is not None else None,
+        "follower_source": "Steam Community XML memberCount" if followers is not None else None,
+        "official_ge5000": followers is not None and followers >= 5000,
         "sexual_content_screened": True,
         "capsule_image": capsule,
         "header_image": header,

@@ -13,7 +13,7 @@ from radar_backend.state.json_documents import load_json
 def main(*, build_record=production_build_record, publish=upsert_sharded) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--appid", type=int, required=True)
-    parser.add_argument("--followers", type=int, required=True)
+    parser.add_argument("--followers", type=lambda value: None if value == "" else int(value), required=True)
     parser.add_argument("--release-date", required=True)
     parser.add_argument("--follower-checked-at")
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -27,7 +27,10 @@ def main(*, build_record=production_build_record, publish=upsert_sharded) -> Non
         admission = normalize_twitch_admission(load_json(args.twitch_admission), args.appid)
         if admission is None:
             raise SystemExit('Invalid Twitch Steam admission proof')
-    if args.followers < 0 or (args.followers < 5000 and admission is None):
+    if not ((args.followers is None and admission is not None) or (
+        type(args.followers) is int and args.followers >= 0
+        and (args.followers >= 5000 or admission is not None)
+    )):
         raise SystemExit(
             "content backend only accepts official Followers >= 5000"
         )
