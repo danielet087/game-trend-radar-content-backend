@@ -5,6 +5,7 @@ from pathlib import Path
 from radar_backend.adapters.localized_descriptions import merge_description_fields
 from radar_backend.adapters.steam_taxonomy import preserve_taxonomy
 from radar_backend.adapters.player_categories import has_verified_categories
+from radar_core.domain.mature_content import REVIEWED_NON_EROTIC, reviewed_descriptors
 from radar_core.domain.twitch_admission import is_twitch_qualified
 from radar_backend.domain.content import TAIPEI, valid_date
 from radar_backend.adapters.catalog_rules import keep_newer_release
@@ -187,7 +188,9 @@ def excluded_public_appids(data_dir: Path) -> set[int]:
     payload = load_json(path)
     if not isinstance(payload.get("appids"), list):
         raise RuntimeError("Malformed adult exclusion list")
-    return {int(appid) for appid in payload["appids"]}
+    # The public list can predate a reviewed descriptor-4 correction. Fresh
+    # Store and record descriptors still reject any new adult-only evidence.
+    return {int(appid) for appid in payload["appids"]} - REVIEWED_NON_EROTIC.keys()
 
 
 def upsert_sharded(
@@ -201,7 +204,9 @@ def upsert_sharded(
 ) -> bool:
     """Update one AppID file and only the affected calendar shard."""
     appid = int(record["appid"])
-    if appid in excluded_public_appids(data_dir):
+    descriptors = {int(value) for value in record.get("content_descriptorids", [])}
+    if (appid in excluded_public_appids(data_dir)
+            or reviewed_descriptors(appid, descriptors) & {3, 4}):
         raise RuntimeError(f"AppID {appid} excluded by official Steam adult-content audit")
     path = data_dir / "games" / f"{appid}.json"
     existing = {}
