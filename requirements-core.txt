@@ -1,2 +1,2 @@
 # Shared rules are pinned to an immutable revision; update after offline tests.
-radar-core @ git+https://github.com/danielet087/game-trend-radar-backend.git@9067e1eebeec0dabe7073c674a4e94c6cc4b8263#subdirectory=packages/radar-core
+radar-core @ git+https://github.com/danielet087/game-trend-radar-backend.git@51790e66e1b450f6e29fe3ebfd4e13b57529e53c#subdirectory=packages/radar-core

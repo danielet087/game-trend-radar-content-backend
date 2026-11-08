@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 
+from radar_core.domain.mature_content import decide_content
 from radar_core.domain.twitch_admission import aware_time, is_twitch_qualified
 from radar_core.publication import snapshot_revision
 from radar_backend.adapters.catalog_rules import metadata_gaps, keep_newer_release
@@ -208,6 +209,8 @@ def validate_record(record: dict) -> None:
             or not valid_date(record.get("release_start"))
             or record.get("sexual_content_screened") is not True):
         raise RuntimeError("Invalid enriched date or adult-screening contract")
+    if decide_content(record).status != "screened":
+        raise RuntimeError("Content review required before cached publication")
     if not (record.get("header_image") or record.get("main_capsule_image")):
         raise RuntimeError("Missing enriched artwork")
     if not isinstance(record.get("language_support"), dict) or not isinstance(record.get("tags"), list) or not isinstance(record.get("genres"), list):

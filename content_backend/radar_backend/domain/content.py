@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 from radar_backend.domain.player_categories import category_fields
-from radar_core.domain.mature_content import REVIEWED_NON_EROTIC, reviewed_descriptors
+from radar_core.domain.mature_content import decide_content
 from radar_core.domain.twitch_admission import (
     TW_STORE_DATE_AUTHORITY, TW_STORE_DATE_PROVIDER, is_twitch_qualified,
     normalize_twitch_admission, resolve_store_release_day,
@@ -40,12 +40,7 @@ EXPLICIT_DESC = re.compile(
 
 def is_explicit_sex_game(store_item: dict) -> bool:
     """Same formal rule as main backend screen_steam_candidates_before_followers."""
-    ids = reviewed_descriptors(store_item.get('appid'), set(store_item.get('content_descriptorids') or []))
-    if ids & SEXUAL_CONTENT_IDS:
-        return True
-    tags = [row.get('tagid') for row in (store_item.get('tags') or []) if isinstance(row, dict)]
-    description = str((store_item.get('basic_info') or {}).get('short_description') or '')
-    return bool(12095 in tags[:5] and (9130 in tags[:10] or 6650 in tags[:5]) and EXPLICIT_DESC.search(description))
+    return decide_content(store_item).status == "excluded"
 
 
 def exact_store_display_date(value: object) -> str | None:
@@ -147,14 +142,17 @@ def validate_store_snapshot(appid: int, en: dict, details: dict, admission: dict
     descriptor_data = details.get("content_descriptors") or {}
     descriptor_ids = descriptor_data.get("ids", []) if isinstance(descriptor_data, dict) else []
     descriptor_ids = list(descriptor_ids) + list(en.get("content_descriptorids") or [])
-    if reviewed_descriptors(appid, {int(x) for x in descriptor_ids}) & {3, 4}:
-        raise RuntimeError(f"Steam AppID {appid} has adult-only sexual content descriptors")
-    screened = dict(en)
-    screened['appid'] = appid
+    screened = {**en, "appid": appid,
+        "content_descriptorids": list(en.get("content_descriptorids") or [])}
     if not isinstance(screened.get('tags'), list):
         screened['tags'] = [{'tagid': tag_id} for tag_id in (en.get('tagids') or [])]
-    if (admission is not None or appid in REVIEWED_NON_EROTIC) and is_explicit_sex_game(screened):
-        raise RuntimeError(f'Steam AppID {appid} failed the formal sexual-content screen')
+    decision = decide_content(screened, details)
+    if decision.status == "excluded":
+        if decision.reason == "adult_only_descriptor":
+            raise RuntimeError(f"Steam AppID {appid} has adult-only sexual content descriptors")
+        raise RuntimeError(f"Steam AppID {appid} failed the formal sexual-content screen: {decision.reason}")
+    if decision.status == "review":
+        raise RuntimeError(f"Steam AppID {appid} content review pending: {decision.reason}")
     return descriptor_ids
 
 
@@ -341,6 +339,12 @@ def record_from_snapshot(
         if ordinary_exact_released:
             record['release_date_basis'] = 'steam_released_taiwan_store_date_verified'
     record['content_descriptorids'] = sorted({int(x) for x in descriptor_ids})
+    record['content_screening'] = decide_content({**en, 'appid': appid,
+        'content_descriptorids': descriptor_ids}, details).record()
+    if 4 in record['content_descriptorids']:
+        record['content_details'] = {field: details[field] for field in (
+            'steam_appid', 'name', 'short_description', 'about_the_game',
+            'detailed_description', 'content_descriptors') if field in details}
     if admission is not None:
         record['twitch_admission'] = admission
         if not is_twitch_qualified(record):
