@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 from radar_backend.domain.player_categories import category_fields
+from radar_core.domain.mature_content import REVIEWED_NON_EROTIC, reviewed_descriptors
 from radar_core.domain.twitch_admission import (
     TW_STORE_DATE_AUTHORITY, TW_STORE_DATE_PROVIDER, is_twitch_qualified,
     normalize_twitch_admission, resolve_store_release_day,
@@ -39,7 +40,7 @@ EXPLICIT_DESC = re.compile(
 
 def is_explicit_sex_game(store_item: dict) -> bool:
     """Same formal rule as main backend screen_steam_candidates_before_followers."""
-    ids = set(store_item.get('content_descriptorids') or [])
+    ids = reviewed_descriptors(store_item.get('appid'), set(store_item.get('content_descriptorids') or []))
     if ids & SEXUAL_CONTENT_IDS:
         return True
     tags = [row.get('tagid') for row in (store_item.get('tags') or []) if isinstance(row, dict)]
@@ -146,12 +147,13 @@ def validate_store_snapshot(appid: int, en: dict, details: dict, admission: dict
     descriptor_data = details.get("content_descriptors") or {}
     descriptor_ids = descriptor_data.get("ids", []) if isinstance(descriptor_data, dict) else []
     descriptor_ids = list(descriptor_ids) + list(en.get("content_descriptorids") or [])
-    if {int(x) for x in descriptor_ids} & {3, 4}:
+    if reviewed_descriptors(appid, {int(x) for x in descriptor_ids}) & {3, 4}:
         raise RuntimeError(f"Steam AppID {appid} has adult-only sexual content descriptors")
     screened = dict(en)
+    screened['appid'] = appid
     if not isinstance(screened.get('tags'), list):
         screened['tags'] = [{'tagid': tag_id} for tag_id in (en.get('tagids') or [])]
-    if admission is not None and is_explicit_sex_game(screened):
+    if (admission is not None or appid in REVIEWED_NON_EROTIC) and is_explicit_sex_game(screened):
         raise RuntimeError(f'Steam AppID {appid} failed the formal sexual-content screen')
     return descriptor_ids
 
