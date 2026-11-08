@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Callable
+from radar_core.domain.mature_content import decide_content
 from radar_core.domain.twitch_admission import (
     aware_time,
     is_twitch_qualified,
@@ -24,6 +25,8 @@ def metadata_gaps(
     # A fresh date audit can finish while this run still holds an older master.
     source = preserve_release(record, source)
     gaps = []
+    if decide_content(record).status != "screened":
+        gaps.append("content_review")
     if (record.get("release_start") != source["release_start"]
             or record.get("followers") != source["followers"]):
         gaps.append("source_changed")

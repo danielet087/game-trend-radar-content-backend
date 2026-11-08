@@ -93,8 +93,10 @@ PYTHONPATH=content_backend python -m unittest discover -s content_backend -p "te
 
 仍使用既有 `FRONTEND_REPO_TOKEN`，寫入 `danielet087/game-trend-radar`；未改動憑證或存取範圍。
 
-## 一般限制級作品的內容更正
+## 一般限制級作品的通用內容判斷
 
-內容建檔、快取重播及公開排除清單沿用共用核心 `radar_core.domain.mature_content` 中按官方 AppID 核對的更正。
-Steam descriptor 4 不單獨代表以色情為主；已核對的一般作品可以在人氣／日期資格合格時發布，
-原始分級描述仍完整保存。新出現的 descriptor 3 或明確色情介紹仍優先阻擋，未核對作品不自動放行。
+收集與內容發布共用 `radar_core.domain.mature_content` 的同一套判斷，所有新 AppID 都適用。
+Descriptor 3 仍排除；descriptor 4 會依同一 AppID 的官方遊戲介紹判斷主要內容，不能只因裸露或性內容警語就當成色情遊戲。
+資料不足／衝突時標成可重查的 `content review pending`，沿用既有失敗重試與定期補資料流程，不寫成永久色情排除。
+當前官方介紹、原始 descriptors 與判斷原因保存於內容記錄，快取重播同樣檢查證據；沒有證據的舊快取會重新收集。
+歷史清單中僅有 descriptor 4 的項目會重新調查，這些歷史資料不作為個別 AppID 的收錄白名單。
