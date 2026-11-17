@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: Checkout independent content backend code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           sparse-checkout: |
             content_backend/
@@ -63,7 +63,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -142,7 +142,7 @@ jobs:
 
       - name: Preserve publication receipt
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: steam-content-publication-${{ github.run_id }}
           path: ${{ runner.temp }}/steam-content-publication.json
