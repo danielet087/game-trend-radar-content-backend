@@ -1,8 +1,10 @@
 """Preserve verified release and admission evidence without storage access."""
 
 from datetime import datetime, timezone
-from radar_core.domain.twitch_admission import preserve_twitch_admission
+from radar_core.domain.twitch_admission import aware_time, preserve_twitch_admission
 from typing import Callable
+
+from radar_backend.domain.content import TAIPEI
 
 RELEASE_FIELDS = (
     "release_raw",
@@ -52,4 +54,23 @@ def keep_newer_release(
                 result[key] = existing[key]
             else:
                 result.pop(key, None)
+        backfill_release_diagnostics(result)
     return result
+
+
+def backfill_release_diagnostics(row: dict) -> None:
+    """Derive the timestamp diagnostics that records verified before they existed lack.
+
+    The kept evidence wins over a fresh historical record, which used to drop
+    the fresh diagnostics as well and left the record incomplete for good.
+    Both values follow from the kept instant and date alone; a record holding
+    either one is left untouched.
+    """
+    if "release_timestamp_taipei_date" in row or "release_date_conflict" in row:
+        return
+    instant = aware_time(row.get("release_time_utc"))
+    if instant is None:
+        return
+    day = instant.astimezone(TAIPEI).date().isoformat()
+    row["release_timestamp_taipei_date"] = day
+    row["release_date_conflict"] = row.get("release_start") != day
