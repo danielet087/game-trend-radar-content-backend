@@ -1,0 +1,122 @@
+name: Refresh Steam media
+run-name: "Steam media | source=${{ inputs.trigger_source || github.event_name }}"
+on:
+  # Rides on the description refresh (01/07/13/19:30 Taipei, dispatched by the
+  # Cloudflare scheduler), so it needs no scheduler slot of its own.
+  workflow_run:
+    workflows: ["Refresh Steam Chinese descriptions"]
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/steam-media-refresh.yml
+      - content_backend/refresh_media.py
+      - content_backend/radar_backend/domain/steam_media.py
+      - content_backend/radar_backend/publication/media_snapshot.py
+      - content_backend/radar_backend/jobs/publish_media.py
+  workflow_dispatch:
+    inputs:
+      trigger_source:
+        description: Trigger source
+        required: false
+        type: string
+        default: manual
+permissions:
+  contents: read
+concurrency:
+  group: steam-media-refresh
+  cancel-in-progress: false
+jobs:
+  refresh:
+    continue-on-error: true
+    if: vars.RADAR_DATABASE_MIGRATION_PAUSE != '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RADAR_DATABASE_PRIMARY: ${{ vars.RADAR_DATABASE_PRIMARY || '0' }}
+      TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+      TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install and verify media refresh
+        env:
+          RADAR_DATABASE_PRIMARY: '0'
+        run: |
+          python -m pip install --disable-pip-version-check -r content_backend/requirements.txt
+          PYTHONPATH=content_backend python -m unittest discover -s content_backend -p 'test_*.py' -q
+      - name: Checkout public frontend with existing write token
+        env:
+          GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN:-}" || { echo '::error::Missing FRONTEND_REPO_TOKEN'; exit 1; }
+          gh auth setup-git
+          gh repo clone danielet087/game-trend-radar frontend -- --depth 1
+      - name: Load authoritative database inputs and establish collection baseline
+        run: PYTHONPATH=content_backend python -m radar_backend.jobs.prepare_state --frontend frontend
+      - name: Validate catalog before media-only writes
+        run: PYTHONPATH=content_backend python -m radar_backend.jobs.publish_content validate --frontend frontend
+      - name: Collect due media in 50-game Store Browse batches
+        run: |
+          PYTHONPATH=content_backend python -u content_backend/refresh_media.py \
+            --data-dir frontend/data --max-games 300 --max-seconds 300
+      - name: Freeze media and retry checkpoint
+        run: |
+          PYTHONPATH=content_backend python -m radar_backend.jobs.publish_media freeze \
+            --frontend frontend --output "$RUNNER_TEMP/steam-media-batch.json"
+      - name: Publish frozen media against latest frontend
+        env:
+          GH_TOKEN: ${{ secrets.FRONTEND_REPO_TOKEN }}
+        run: |
+          PYTHONPATH=content_backend python -m radar_backend.jobs.publish_media publish \
+            --frontend frontend --frozen "$RUNNER_TEMP/steam-media-batch.json" \
+            --receipt "$RUNNER_TEMP/steam-media-publication.json"
+      - name: Preserve media publication receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: steam-media-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/steam-media-publication.json
+            ${{ runner.temp }}/steam-media-batch.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Report media queue
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'steam-media-publication.json'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
+              output.write('\n## Steam 主視覺、截圖、預告\n')
+              if not path.is_file():
+                  output.write('- 尚未取得本輪發布確認\n')
+              else:
+                  report = json.loads(path.read_text())
+                  result = report.get('media_result') or {}
+                  output.write(f"- 發布狀態：{report['job_result']['status']}\n")
+                  output.write(f"- 有媒體檔的遊戲：{result.get('with_media')}／{result.get('game_count')}\n")
+                  output.write(f"- 本輪更新：{len(result.get('updated_appids', []))}，移除：{len(result.get('removed_appids', []))}\n")
+                  output.write(f"- 失敗待重試：{len(result.get('retry_pending_appids', []))}\n")
+                  output.write(f"- 下次到期：{result.get('next_due_at')}\n")
+          PY
+
+  notification:
+    needs: [refresh]
+    if: always() && !cancelled() && vars.RADAR_DATABASE_MIGRATION_PAUSE != '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: danielet087/game-trend-radar-backend/.github/actions/scheduled-failure-notice@e743210a045e1d1603b381e0476e9a6369972bf1
+        with:
+          workflow-key: steam-media-refresh.yml
+          job-name: refresh
