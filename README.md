@@ -66,6 +66,25 @@ python content_backend/localize_descriptions.py --data-dir /path/to/frontend/dat
 
 簡介、月份、清單、catalog 與 checkpoint 在同一 commit 發布。發布衝突使用共用 `publish_with_retry`，僅重播已凍結的簡介欄位，不重新呼叫 Steam，也不覆蓋併發更新的 Followers、日期或其他內容。較新的官方簡介檢查時間優先。發布收據保存真實 Git commit，`data/publication/steam_descriptions.json` 保存最後發布的排程 slot 以避免同一 slot 重做。
 
+## 主視覺、截圖與預告（`data/media/{appid}.json`）
+
+遊戲頁要用的媒體資料單獨存一個檔，不放進單款紀錄。原因是單款紀錄會被完整複製到月份檔與 `steam_upcoming.json`，而只有遊戲頁需要這些清單。
+
+- **內容**：
+  - `hero_image`／`hero_image_2x`：Steam 的 `library_hero` 寬版主視覺，沒有 Logo。
+  - `screenshots`：最多 12 張，每張有 600×338 縮圖與原圖。只取全年齡截圖。
+  - `trailers`：最多 3 支，只取全年齡預告。每支有封面、短預告 mp4／webm、完整預告的 HLS 與 DASH（h264）。
+  - `developers`、`publishers`、`franchises`。
+- **網址**：全部指向 Steam CDN（`shared.akamai.steamstatic.com`、`video.akamai.steamstatic.com`），本站不存任何圖片或影片。Steam 的影片伺服器回應 `access-control-allow-origin: *`，網頁可以直接播放。
+- **排程**：`steam-media-refresh.yml` 跟在簡介更新之後跑（`workflow_run`），合併到 main 時也會跑一次。用台灣 Store Browse 一次查 50 款，新進遊戲在下一輪就有媒體檔。
+- **回查**：每週回查一次。內容沒變就只更新 `media_refresh_status.json` 的檢查時間，不改媒體檔。失敗或 Steam 沒回這款時保留舊檔，6 小時後重試；429 會停止當輪。
+- **移除**：遊戲離開目錄或被成人審核排除時，下一輪移除它的媒體檔。
+- **發布**：用共用 `publish_with_retry` 重播已凍結的媒體檔，只動 `data/media/`、狀態檔與 `data/publication/steam_media.json`。主線上若已有較新的媒體檔，以較新的為準。沒有到期也沒有移除時跳過發布，不製造 commit。
+
+```sh
+python content_backend/refresh_media.py --data-dir /path/to/frontend/data --max-games 300 --max-seconds 300
+```
+
 ## 同步契約
 
 - `data/games/{appid}.json`：完整單款紀錄。
