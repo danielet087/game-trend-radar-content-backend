@@ -38,7 +38,8 @@ def main():
     replay = FrozenMediaPublication(frozen)
     status = frozen["status"]
     if (not frozen["documents"] and not status.get("removed_appids") and not status.get("due_count")
-            and frozen.get("store_facts") is None):
+            and frozen.get("store_facts") is None and frozen.get("references") is None
+            and not (frozen.get("reference_status") or {}).get("checked_appids")):
         # Nothing was checked or removed: publishing would only move timestamps.
         job = JobResult(job="steam_media_refresh", status=JobStatus.SKIPPED, reason="No media was due and store facts are unchanged",
                         input_revision=frozen["input_revision"], target_slot=args.target_slot or None)

@@ -11,6 +11,8 @@ on:
     paths:
       - .github/workflows/steam-media-refresh.yml
       - content_backend/refresh_media.py
+      - content_backend/refresh_references.py
+      - content_backend/radar_backend/domain/steam_references.py
       - content_backend/radar_backend/domain/steam_media.py
       - content_backend/radar_backend/domain/steam_store_facts.py
       - content_backend/radar_backend/publication/media_snapshot.py
@@ -62,6 +64,10 @@ jobs:
         run: PYTHONPATH=content_backend python -m radar_backend.jobs.prepare_state --frontend frontend
       - name: Validate catalog before media-only writes
         run: PYTHONPATH=content_backend python -m radar_backend.jobs.publish_content validate --frontend frontend
+      - name: Refresh the Steam versions of console games
+        run: |
+          PYTHONPATH=content_backend python -u content_backend/refresh_references.py \
+            --data-dir frontend/data --max-games 60 --max-seconds 150
       - name: Collect due media in 50-game Store Browse batches
         run: |
           PYTHONPATH=content_backend python -u content_backend/refresh_media.py \
@@ -109,6 +115,7 @@ jobs:
                   output.write(f"- 售價／分級／Steam Deck：{result.get('facts_game_count')} 款，"
                                f"變動 {len(result.get('facts_changed_appids') or [])}，"
                                f"失敗 {len(result.get('facts_failed_appids') or [])}，發布：{result.get('store_facts')}\n")
+                  output.write(f"- 主機遊戲的 Steam 版：{result.get('reference_count')} 款，發布：{result.get('references')}\n")
           PY
 
   notification:
