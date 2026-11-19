@@ -2,9 +2,10 @@
 
 python content_backend/refresh_media.py --data-dir /path/to/frontend/data
 
-Only data/media/, its status file and nothing else are written. A game gets a
-media file within one run of entering the catalog, is re-checked weekly, and
-loses its file when it leaves the catalog or is excluded.
+Only data/media/, data/store_facts.json and the status file are written. A
+game gets a media file within one run of entering the catalog, is re-checked
+weekly, and loses its file when it leaves the catalog or is excluded. Price,
+CSRR rating and Steam Deck status are checked for every game on every run.
 """
 from __future__ import annotations
 
@@ -20,6 +21,9 @@ from radar_backend.adapters.content_helpers import STORE_BROWSE, SteamRateLimit,
 from radar_backend.domain.steam_media import (MEDIA_DIR, RETRY_DELAY, SCHEMA_VERSION, STATUS_FILE, due_at,
                                               media_content, media_document, retry_pending, same_content,
                                               timestamp, valid_document)
+from radar_backend.domain.steam_store_facts import (FACTS_FILE, facts_document, needs_publication,
+                                                    same_facts, store_facts)
+from radar_backend.domain.steam_store_facts import valid_document as valid_facts_document
 from radar_backend.publication import catalog
 from radar_backend.publication.content_snapshot import strict_catalog
 from radar_backend.state.json_documents import load_json, write_json
@@ -27,9 +31,10 @@ from radar_backend.state.json_documents import load_json, write_json
 BATCH_SIZE = 50
 DATA_REQUEST = {"include_assets": True, "include_screenshots": True, "include_trailers": True,
                 "include_basic_info": True}
+FACTS_REQUEST = {"include_ratings": True, "include_platforms": True, "include_all_purchase_options": True}
 
 
-def fetch_items(appids: list[int]) -> dict:
+def fetch_items(appids: list[int], data_request: dict = DATA_REQUEST) -> dict:
     """Fresh Taiwan Store Browse items keyed by AppID string."""
     rows = {}
     with requests.Session() as session:
@@ -37,7 +42,7 @@ def fetch_items(appids: list[int]) -> dict:
         for start in range(0, len(appids), BATCH_SIZE):
             payload = {"ids": [{"appid": appid} for appid in appids[start:start + BATCH_SIZE]],
                        "context": {"country_code": "TW", "language": "tchinese", "steam_realm": 1},
-                       "data_request": DATA_REQUEST}
+                       "data_request": data_request}
             data = request_json(session, STORE_BROWSE,
                                 params={"input_json": json.dumps(payload, separators=(",", ":"))}, attempts=2)
             items = (data.get("response") or {}).get("store_items")
@@ -64,6 +69,48 @@ def load_document(data_dir: Path, appid: int) -> dict | None:
     except (OSError, ValueError, TypeError):
         return None
     return document if valid_document(document, appid) else None
+
+
+def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=fetch_items) -> dict:
+    """Check every game; a failed batch keeps each game's last confirmed values."""
+    path = data_dir / FACTS_FILE
+    try:
+        previous = load_json(path) if path.is_file() else None
+    except (OSError, ValueError, TypeError):
+        previous = None
+    previous = previous if valid_facts_document(previous) else None
+    old = (previous or {}).get("games", {})
+    games, changed, failed, stop_reason = {}, [], [], ""
+    for offset in range(0, len(appids), BATCH_SIZE):
+        batch = appids[offset:offset + BATCH_SIZE]
+        items = {}
+        if not stop_reason:
+            try:
+                items = fetch(batch, FACTS_REQUEST)
+            except (RuntimeError, requests.RequestException, ValueError, TypeError) as error:
+                if isinstance(error, SteamRateLimit):
+                    stop_reason = "steam_rate_limit"
+                items = None
+        for appid in batch:
+            key = str(appid)
+            item = (items or {}).get(key)
+            try:
+                facts = store_facts(appid, item) if item is not None else None
+            except ValueError:
+                facts = None
+            if facts is None:
+                failed.append(appid)
+                if key in old:
+                    games[key] = old[key]
+                continue
+            games[key] = {**facts, "checked_at": timestamp(now)}
+            if not same_facts(old.get(key), facts):
+                changed.append(appid)
+    document = facts_document(games, timestamp(now), STORE_BROWSE)
+    publish = needs_publication(previous, document, now)
+    write_json(path, document)
+    return {"facts_game_count": len(games), "facts_changed_appids": changed, "facts_failed_appids": failed,
+            "facts_publish": publish, "facts_stop_reason": stop_reason}
 
 
 def refresh(data_dir: Path, *, max_games: int = 300, max_seconds: int = 300,
@@ -132,6 +179,7 @@ def refresh(data_dir: Path, *, max_games: int = 300, max_seconds: int = 300,
             checkpoints[str(appid)] = {"attempted_at": timestamp(now), "checked_at": timestamp(now),
                                        "outcome": "success"}
 
+    facts = refresh_store_facts(data_dir, appids, now, fetch)
     deadlines = {appid: due_at(checkpoints.get(str(appid), {}), documents[appid] is not None) for appid in appids}
     retry = retry_pending(appids, checkpoints)
     pending = sorted({appid for appid in appids if deadlines[appid] <= now} | set(retry))
@@ -141,7 +189,8 @@ def refresh(data_dir: Path, *, max_games: int = 300, max_seconds: int = 300,
               "removed_appids": removed, "failed_appids": failed, "retry_pending_appids": retry,
               "pending_count": len(pending), "complete": not pending,
               "stop_reason": stop_reason or ("game_budget" if len(due) > len(selected) else ""),
-              "next_due_at": timestamp(max(min(deadlines.values()), now)) if deadlines else None}
+              "next_due_at": timestamp(max(min(deadlines.values()), now)) if deadlines else None,
+              **facts}
     write_json(status_path, report)
     print(json.dumps({key: value for key, value in report.items() if key != "checkpoints"}, ensure_ascii=False),
           flush=True)

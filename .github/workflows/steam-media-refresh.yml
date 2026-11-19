@@ -12,6 +12,7 @@ on:
       - .github/workflows/steam-media-refresh.yml
       - content_backend/refresh_media.py
       - content_backend/radar_backend/domain/steam_media.py
+      - content_backend/radar_backend/domain/steam_store_facts.py
       - content_backend/radar_backend/publication/media_snapshot.py
       - content_backend/radar_backend/jobs/publish_media.py
   workflow_dispatch:
@@ -105,6 +106,9 @@ jobs:
                   output.write(f"- 本輪更新：{len(result.get('updated_appids', []))}，移除：{len(result.get('removed_appids', []))}\n")
                   output.write(f"- 失敗待重試：{len(result.get('retry_pending_appids', []))}\n")
                   output.write(f"- 下次到期：{result.get('next_due_at')}\n")
+                  output.write(f"- 售價／分級／Steam Deck：{result.get('facts_game_count')} 款，"
+                               f"變動 {len(result.get('facts_changed_appids') or [])}，"
+                               f"失敗 {len(result.get('facts_failed_appids') or [])}，發布：{result.get('store_facts')}\n")
           PY
 
   notification:

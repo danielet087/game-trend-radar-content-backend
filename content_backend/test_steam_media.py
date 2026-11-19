@@ -128,7 +128,7 @@ class MediaRefreshTests(unittest.TestCase):
             catalog.upsert_sharded(self.data, row, row["release_start"], force=True, now=NOW)
 
     def fetch(self, **items):
-        def lookup(appids):
+        def lookup(appids, data_request=cli.DATA_REQUEST):
             return {str(appid): items.get(str(appid), item(appid)) for appid in appids}
         return lookup
 
@@ -148,9 +148,15 @@ class MediaRefreshTests(unittest.TestCase):
     def test_weekly_recheck_keeps_unchanged_files_and_rewrites_changed_ones(self):
         self.add(123, 456)
         cli.refresh(self.data, now=NOW, fetch=self.fetch())
-        with patch.object(cli, "fetch_items") as untouched:
-            early = cli.refresh(self.data, now=NOW + timedelta(days=3), fetch=untouched)
-        untouched.assert_not_called()
+        requests_made = []
+
+        def facts_only(appids, data_request=cli.DATA_REQUEST):
+            requests_made.append(data_request)
+            return {}
+
+        early = cli.refresh(self.data, now=NOW + timedelta(days=3), fetch=facts_only)
+        # Store facts are checked on every run; media only when due.
+        self.assertEqual(requests_made, [cli.FACTS_REQUEST])
         self.assertEqual(early["due_count"], 0)
         later = NOW + timedelta(days=8)
         result = cli.refresh(self.data, now=later, fetch=self.fetch(**{"456": item(456, trailers=[trailer(456, "New")])}))
@@ -165,7 +171,7 @@ class MediaRefreshTests(unittest.TestCase):
         cli.refresh(self.data, now=NOW, fetch=self.fetch())
         before = load_json(self.data / "media/123.json")
         later = NOW + timedelta(days=8)
-        result = cli.refresh(self.data, now=later, fetch=lambda appids: {})
+        result = cli.refresh(self.data, now=later, fetch=lambda appids, *_: {})
         self.assertEqual(result["failed_appids"], [123])
         self.assertEqual(load_json(self.data / "media/123.json"), before)
         self.assertEqual(result["checkpoints"]["123"]["retry_at"], "2026-11-27T08:00:00Z")
@@ -174,7 +180,7 @@ class MediaRefreshTests(unittest.TestCase):
 
     def test_rate_limit_stops_the_run(self):
         self.add(123)
-        def limited(appids):
+        def limited(appids, *_):
             raise SteamRateLimit("429")
         result = cli.refresh(self.data, now=NOW, fetch=limited)
         self.assertEqual(result["stop_reason"], "steam_rate_limit")
@@ -198,13 +204,15 @@ class MediaRefreshTests(unittest.TestCase):
 
     def test_game_budget_leaves_the_rest_pending(self):
         self.add(*range(1, 8))
-        batches = []
-        def lookup(appids):
-            batches.append(list(appids))
+        batches, fact_batches = [], []
+        def lookup(appids, data_request=cli.DATA_REQUEST):
+            (batches if data_request is cli.DATA_REQUEST else fact_batches).append(list(appids))
             return {str(appid): item(appid) for appid in appids}
         with patch.object(cli, "BATCH_SIZE", 3):
             result = cli.refresh(self.data, max_games=5, now=NOW, fetch=lookup)
         self.assertEqual(batches, [[1, 2, 3], [4, 5]])
+        # The game budget limits media only; store facts cover every game.
+        self.assertEqual(fact_batches, [[1, 2, 3], [4, 5, 6], [7]])
         self.assertEqual(result["stop_reason"], "game_budget")
         self.assertEqual(result["pending_count"], 2)
 
@@ -223,7 +231,7 @@ class MediaRefreshTests(unittest.TestCase):
 
 class MediaPublicationTests(LocalGitFixture):
     def prepare(self, **items):
-        def lookup(appids):
+        def lookup(appids, *_):
             return {str(appid): items.get(str(appid), item(appid)) for appid in appids}
         cli.refresh(self.frontend / "data", fetch=lookup)
         return freeze(self.frontend, input_revision=self.git(self.frontend, "rev-parse", "HEAD"))
@@ -274,7 +282,7 @@ class MediaPublicationTests(LocalGitFixture):
         from radar_backend.jobs import publish_media
         self.prepare()
         frozen = freeze(self.frontend, input_revision=self.git(self.frontend, "rev-parse", "HEAD"))
-        frozen["documents"] = []
+        frozen["documents"], frozen["store_facts"] = [], None
         frozen["status"].update(due_count=0, removed_appids=[], updated_appids=[])
         batch, receipt = self.root / "batch.json", self.root / "receipt.json"
         write_json(batch, frozen)
