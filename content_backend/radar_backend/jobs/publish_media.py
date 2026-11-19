@@ -37,9 +37,10 @@ def main():
     frozen = load_json(args.frozen)
     replay = FrozenMediaPublication(frozen)
     status = frozen["status"]
-    if not frozen["documents"] and not status.get("removed_appids") and not status.get("due_count"):
+    if (not frozen["documents"] and not status.get("removed_appids") and not status.get("due_count")
+            and frozen.get("store_facts") is None):
         # Nothing was checked or removed: publishing would only move timestamps.
-        job = JobResult(job="steam_media_refresh", status=JobStatus.SKIPPED, reason="No media was due",
+        job = JobResult(job="steam_media_refresh", status=JobStatus.SKIPPED, reason="No media was due and store facts are unchanged",
                         input_revision=frozen["input_revision"], target_slot=args.target_slot or None)
         write_json(args.receipt, {"job_result": job.to_dict(), "media_result": {
             key: value for key, value in status.items() if key != "checkpoints"}})

@@ -1,0 +1,144 @@
+"""Store facts: Taiwan price, CSRR rating and Steam Deck status for every game."""
+from datetime import datetime, timedelta, timezone
+import unittest
+
+import refresh_media as cli
+from radar_backend.domain.steam_store_facts import (descriptors, facts_document, needs_publication, price,
+                                                    rating, steam_deck, store_facts, valid_document)
+from radar_backend.publication import catalog
+from radar_backend.publication.media_snapshot import freeze
+from radar_backend.state.json_documents import load_json, write_json
+from test_steam_media import MediaPublicationTests, NOW, item
+
+STORE = {"is_free": False,
+         "best_purchase_option": {"final_price_in_cents": "44800", "original_price_in_cents": "56100",
+                                  "formatted_final_price": "NT$ 448.00", "discount_pct": 20,
+                                  "hide_discount_pct_for_compliance": False,
+                                  "active_discounts": [{"discount_end_date": 1796061600}]},
+         "game_rating": {"agency": 13, "rating": "C15", "descriptors": ["Violence, Inappropriate", "language"]},
+         "platforms": {"steam_deck_compat_category": 3}}
+
+
+def store_item(appid=123, **changes):
+    return {**item(appid), **STORE, **changes}
+
+
+class StoreFactParsingTests(unittest.TestCase):
+    def test_price_rating_and_deck_from_one_store_item(self):
+        facts = store_facts(123, store_item())
+        self.assertEqual(facts, {
+            "price": {"free": False, "final_cents": 44800, "original_cents": 56100, "discount_pct": 20,
+                      "discount_ends_at": "2026-11-30T18:00:00Z"},
+            "rating": {"code": "C15", "label": "輔15級", "descriptors": ["暴力", "不當言語"]},
+            "steam_deck": "verified"})
+
+    def test_descriptors_normalize_chinese_english_split_and_joined_names(self):
+        self.assertEqual(descriptors(["性,", "暴力,", "不當言語"]), ["性", "暴力", "不當言語"])
+        self.assertEqual(descriptors(["Tobacco and Alcohol", "Sex, Violence, Fear"]), ["性", "暴力", "恐怖", "菸酒"])
+        self.assertEqual(descriptors(["性,暴力,反社會性,戀愛交友", "drugs"]), ["性", "暴力", "毒品", "反社會性", "戀愛交友"])
+        self.assertEqual(descriptors(["牌類及益智娛樂"]), ["牌類及益智娛樂"])
+        self.assertEqual(descriptors("Violence"), [])
+
+    def test_only_known_csrr_codes_become_ratings(self):
+        self.assertEqual(rating({"game_rating": {"agency": 13, "rating": "G", "descriptors": []}})["label"], "普遍級")
+        self.assertEqual(rating({"game_rating": {"agency": 13, "rating": "P6"}})["label"], "保護級")
+        self.assertIsNone(rating({"game_rating": {"agency": 1, "rating": "M"}}))
+        self.assertIsNone(rating({"game_rating": {"agency": 13, "rating": "X"}}))
+        self.assertIsNone(rating({"game_rating": {"content_survey_notes": "Mature"}}))
+
+    def test_price_free_none_hidden_discount_and_malformed(self):
+        self.assertEqual(price({"is_free": True}), {"free": True})
+        self.assertIsNone(price({}))
+        self.assertIsNone(price({"best_purchase_option": {"final_price_in_cents": "abc"}}))
+        hidden = {"best_purchase_option": {**STORE["best_purchase_option"], "hide_discount_pct_for_compliance": True}}
+        self.assertEqual(price(hidden), {"free": False, "final_cents": 44800})
+        plain = {"best_purchase_option": {"final_price_in_cents": "199000"}}
+        self.assertEqual(price(plain), {"free": False, "final_cents": 199000})
+
+    def test_steam_deck_categories(self):
+        self.assertEqual([steam_deck({"platforms": {"steam_deck_compat_category": value}}) for value in (0, 1, 2, 3, None)],
+                         [None, "unsupported", "playable", "verified", None])
+
+    def test_wrong_appid_is_rejected(self):
+        with self.assertRaises(ValueError):
+            store_facts(456, store_item(123))
+
+    def test_unchanged_facts_republish_only_after_twenty_hours(self):
+        entry = {**store_facts(123, store_item()), "checked_at": "2026-11-19T02:00:00Z"}
+        previous = facts_document({"123": entry}, "2026-11-19T02:00:00Z", "store")
+        later = {**entry, "checked_at": "2026-11-19T08:00:00Z"}
+        current = facts_document({"123": later}, "2026-11-19T08:00:00Z", "store")
+        self.assertFalse(needs_publication(previous, current, NOW + timedelta(hours=6)))
+        self.assertTrue(needs_publication(previous, current, NOW + timedelta(hours=20)))
+        cheaper = facts_document({"123": {**later, "price": {"free": False, "final_cents": 1}}}, later["checked_at"], "store")
+        self.assertTrue(needs_publication(previous, cheaper, NOW + timedelta(hours=6)))
+        self.assertTrue(needs_publication(None, current, NOW))
+
+    def test_document_validation(self):
+        entry = {**store_facts(123, store_item()), "checked_at": "2026-11-19T02:00:00Z"}
+        self.assertTrue(valid_document(facts_document({"123": entry}, "2026-11-19T02:00:00Z", "store")))
+        for broken in ({**entry, "steam_deck": "great"}, {**entry, "checked_at": "soon"},
+                       {**entry, "rating": {"code": "R", "label": "普遍級", "descriptors": []}},
+                       {**entry, "price": {"free": False, "final_cents": 10, "original_cents": 5, "discount_pct": 50}}):
+            self.assertFalse(valid_document(facts_document({"123": broken}, "2026-11-19T02:00:00Z", "store")))
+
+
+class StoreFactRefreshTests(MediaPublicationTests):
+    def lookup(self, **items):
+        def fetch(appids, data_request=cli.DATA_REQUEST):
+            return {str(appid): items.get(str(appid), store_item(appid)) for appid in appids}
+        return fetch
+
+    def test_every_run_checks_all_games_and_failures_keep_last_values(self):
+        data = self.frontend / "data"
+        first = cli.refresh(data, now=NOW, fetch=self.lookup())
+        self.assertEqual(first["facts_failed_appids"], [])
+        self.assertTrue(first["facts_publish"])
+        facts = load_json(data / "store_facts.json")
+        self.assertEqual(facts["games"]["101"]["checked_at"], "2026-11-19T02:00:00Z")
+
+        def broken(appids, data_request=cli.DATA_REQUEST):
+            raise RuntimeError("Steam is down")
+        later = cli.refresh(data, now=NOW + timedelta(hours=6), fetch=broken)
+        self.assertEqual(later["facts_failed_appids"], [101])
+        self.assertFalse(later["facts_publish"])
+        self.assertEqual(load_json(data / "store_facts.json")["games"]["101"]["checked_at"], "2026-11-19T02:00:00Z")
+
+    def test_store_facts_publish_and_drop_a_game_excluded_meanwhile(self):
+        frozen = self.prepare()
+        self.assertEqual(sorted(frozen["store_facts"]["games"]), ["101"])
+        _, replay = self.publish(frozen)
+        self.assertEqual(replay.result["store_facts"], "written")
+        self.assertIn("101", self.remote_json("data/store_facts.json")["games"])
+
+        again = freeze(self.frontend, input_revision=self.git(self.frontend, "rev-parse", "HEAD"))
+        self.git(self.other, "fetch", "origin", "main")
+        self.git(self.other, "reset", "--hard", "origin/main")
+        write_json(self.other / "data/excluded_appids.json", {"appids": [101]})
+        self.commit(self.other, "Adult audit exclusion")
+        self.git(self.other, "push", "origin", "HEAD:main")
+        _, replay = self.publish(again)
+        self.assertEqual(self.remote_json("data/store_facts.json")["games"], {})
+
+    def test_newer_store_facts_on_main_win(self):
+        frozen = self.prepare()
+        newer = {**frozen["store_facts"], "checked_at": "2099-01-01T00:00:00Z"}
+        write_json(self.other / "data/store_facts.json", newer)
+        self.commit(self.other, "Newer store facts")
+        self.git(self.other, "push", "origin", "HEAD:main")
+        _, replay = self.publish(frozen)
+        self.assertEqual(replay.result["store_facts"], "superseded")
+        self.assertEqual(self.remote_json("data/store_facts.json")["checked_at"], "2099-01-01T00:00:00Z")
+
+    def test_malformed_store_facts_are_rejected(self):
+        frozen = self.prepare()
+        frozen["store_facts"]["games"]["101"]["steam_deck"] = "great"
+        from radar_backend.publication.media_snapshot import FrozenMediaPublication
+        with self.assertRaises(RuntimeError):
+            FrozenMediaPublication(frozen)
+
+
+del MediaPublicationTests
+
+if __name__ == "__main__":
+    unittest.main()
