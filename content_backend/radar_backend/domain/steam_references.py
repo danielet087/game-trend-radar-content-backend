@@ -10,7 +10,7 @@ the same title, and the product passes the same sexual-content screen.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import re
 import unicodedata
 
@@ -116,7 +116,15 @@ def title_match(console_name: object, steam_name: object) -> str | None:
 
 
 def reference_release(item: dict, details: dict, now: datetime) -> dict:
-    """The Steam version's day as the Taiwan Store shows it; None when not exact."""
+    """The Steam version's day in Taiwan; None when not exact.
+
+    Steam's release time converted to Taipei is the Taiwan day. The Store's
+    day string is the publisher's announced day, so it can be one day off
+    (an evening launch in the Americas is the next morning in Taiwan); it is
+    kept as release_store_date when it differs. Without a release time, or
+    when the two are further apart than a time zone explains, the Store day
+    stands.
+    """
     release = item.get("release") if isinstance(item.get("release"), dict) else {}
     stamp = release.get("steam_release_date")
     instant = (datetime.fromtimestamp(int(stamp), tz=timezone.utc)
@@ -126,14 +134,19 @@ def reference_release(item: dict, details: dict, now: datetime) -> dict:
     coming = visible.get("coming_soon") if type(visible.get("coming_soon")) is bool else release.get("is_coming_soon")
     released = bool(coming is False and (instant is None or instant <= now) and (official_day or instant))
     exact = released or release.get("coming_soon_display") == "date_full"
-    day, basis = None, None
-    if exact and official_day:
+    taipei_day = instant.astimezone(TAIPEI).date() if instant is not None else None
+    day, basis, store_day = None, None, None
+    if exact and taipei_day and official_day and abs((taipei_day - date.fromisoformat(official_day)).days) <= 1:
+        day, basis = taipei_day.isoformat(), "steam_release_time_taipei"
+        store_day = official_day if official_day != day else None
+    elif exact and official_day:
         day, basis = official_day, "steam_taiwan_store_date"
-    elif exact and instant is not None:
-        day, basis = instant.astimezone(TAIPEI).date().isoformat(), "steam_release_timestamp"
+    elif exact and taipei_day:
+        day, basis = taipei_day.isoformat(), "steam_release_timestamp"
     return {"release_start": day, "release_precision": "day" if day else None,
             "release_coming_soon": not released, "release_date_basis": basis,
-            "release_time_utc": timestamp(instant) if instant else None}
+            "release_time_utc": timestamp(instant) if instant else None,
+            **({"release_store_date": store_day} if store_day else {})}
 
 
 # The page needs these taxonomy fields; sources and fetch statuses stay in the job status.
