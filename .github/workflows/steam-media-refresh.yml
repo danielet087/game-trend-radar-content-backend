@@ -2,9 +2,12 @@ name: Refresh Steam media
 run-name: "Steam media | source=${{ inputs.trigger_source || github.event_name }}"
 on:
   # Rides on the description refresh (01/07/13/19:30 Taipei, dispatched by the
-  # Cloudflare scheduler), so it needs no scheduler slot of its own.
+  # Cloudflare scheduler), so it needs no scheduler slot of its own. It also
+  # follows each qualified game's content enrichment, so a new game has its
+  # media by the next hourly deploy instead of the next description refresh;
+  # games whose media is not yet due are not fetched again.
   workflow_run:
-    workflows: ["Refresh Steam Chinese descriptions"]
+    workflows: ["Refresh Steam Chinese descriptions", "Steam qualified game content enrichment"]
     types: [completed]
   push:
     branches: [main]

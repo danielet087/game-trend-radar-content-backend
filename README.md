@@ -76,7 +76,7 @@ python content_backend/localize_descriptions.py --data-dir /path/to/frontend/dat
   - `trailers`：最多 3 支，只取全年齡預告。每支有封面、短預告 mp4／webm、完整預告的 HLS 與 DASH（h264）。
   - `developers`、`publishers`、`franchises`。
 - **網址**：全部指向 Steam CDN（`shared.akamai.steamstatic.com`、`video.akamai.steamstatic.com`），本站不存任何圖片或影片。Steam 的影片伺服器回應 `access-control-allow-origin: *`，網頁可以直接播放。
-- **排程**：`steam-media-refresh.yml` 跟在簡介更新之後跑（`workflow_run`），合併到 main 時也會跑一次。用台灣 Store Browse 一次查 50 款，新進遊戲在下一輪就有媒體檔。
+- **排程**：`steam-media-refresh.yml` 跟在簡介更新之後跑（`workflow_run`），每款新收錄遊戲的內容補完（`Steam qualified game content enrichment`）之後也跑一次，所以新遊戲在下一次整點部署就有媒體檔；合併到 main 時也會跑一次。用台灣 Store Browse 一次查 50 款，還沒到期的遊戲不會重抓。
 - **回查**：每週回查一次。內容沒變就只更新 `media_refresh_status.json` 的檢查時間，不改媒體檔。失敗或 Steam 沒回這款時保留舊檔，6 小時後重試；429 會停止當輪。
 - **移除**：遊戲離開目錄或被成人審核排除時，下一輪移除它的媒體檔。
 - **發布**：用共用 `publish_with_retry` 重播已凍結的媒體檔，只動 `data/media/`、狀態檔與 `data/publication/steam_media.json`。主線上若已有較新的媒體檔，以較新的為準。沒有到期也沒有移除時跳過發布，不製造 commit。
