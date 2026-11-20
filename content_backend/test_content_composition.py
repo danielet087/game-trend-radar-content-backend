@@ -203,7 +203,9 @@ assert not blocked.intersection(sys.modules)
             shard = json.loads((data / "games/123.json").read_text())
             self.assertEqual(projection["version"], 3)
             self.assertEqual(projection["games"][0]["categories"], shard["categories"])
-            self.assertEqual(projection["games"][0]["short_description"], record["short_description"])
+            # List pages never show the description; the game page reads its own file.
+            self.assertNotIn("short_description", projection["games"][0])
+            self.assertEqual(shard["short_description"], record["short_description"])
             self.assertEqual(
                 json.loads((data / "lists/upcoming.json").read_text())["appids"], [123]
             )

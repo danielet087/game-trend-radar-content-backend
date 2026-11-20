@@ -17,7 +17,7 @@ from radar_backend.domain.catalog import qualified_source
 from radar_backend.domain.content import TAIPEI, valid_date
 from radar_backend.publication import catalog
 from radar_backend.state.json_documents import write_json
-from radar_backend.domain.catalog_projection import FIELDS
+from radar_backend.domain.catalog_projection import FIELDS, RETIRED_FIELDS
 
 OWNED_PATHS = (
     "data/games/", "data/calendar/", "data/lists/", "data/index.json",
@@ -251,8 +251,10 @@ def validate_snapshot(data_dir: Path, *, now: datetime | None = None) -> None:
         if value.get("appids") != expected or value.get("count") != len(expected):
             raise RuntimeError(f"{name} list disagrees with records")
     revision = hashlib.sha256(json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:20]
-    projected_rows = [{key: row[key] for key in FIELDS if key in row} for row in rows]
-    if (projection.get("version") != 3 or projection.get("games") != projected_rows
+    # A catalog written before RETIRED_FIELDS left it is still exact; the next write slims it.
+    projections = [[{key: row[key] for key in fields if key in row} for row in rows]
+                   for fields in (FIELDS, FIELDS + RETIRED_FIELDS)]
+    if (projection.get("version") != 3 or projection.get("games") not in projections
             or projection.get("revision") != revision or projection.get("count") != len(rows)
             or index.get("catalog_revision") != revision or index.get("catalog_path") != "catalog.json"):
         raise RuntimeError("Browser projection does not match accepted records")
