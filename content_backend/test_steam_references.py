@@ -127,11 +127,32 @@ class LinkAndTitleTests(unittest.TestCase):
 
 
 class ReleaseAndDueTests(unittest.TestCase):
-    def test_released_game_uses_the_taiwan_store_day(self):
+    def test_released_game_uses_the_taiwan_day_of_its_release_time(self):
         release = reference_release(browse(1, "A"), details(1), NOW)
         self.assertEqual(release["release_start"], "2024-06-13")
         self.assertFalse(release["release_coming_soon"])
-        self.assertEqual(release["release_date_basis"], "steam_taiwan_store_date")
+        self.assertEqual(release["release_date_basis"], "steam_release_time_taipei")
+        self.assertNotIn("release_store_date", release)
+
+    def test_a_store_day_one_day_off_is_a_time_zone_and_is_kept_beside_the_taiwan_day(self):
+        # An evening launch in the Americas: the Store says 2/27, Taiwan already has 2/28 13:01.
+        evening = int(datetime(2025, 2, 28, 5, 1, 35, tzinfo=timezone.utc).timestamp())
+        release = reference_release(browse(1, "A", stamp=evening), details(1, date="2025 年 2 月 27 日"), NOW)
+        self.assertEqual((release["release_start"], release["release_date_basis"], release["release_store_date"]),
+                         ("2025-02-28", "steam_release_time_taipei", "2025-02-27"))
+        self.assertEqual(release["release_time_utc"], "2025-02-28T05:01:35Z")
+        # A Japanese midnight launch is 23:00 the day before in Taiwan.
+        midnight = int(datetime(2026, 12, 3, 15, tzinfo=timezone.utc).timestamp())
+        upcoming = reference_release(browse(1, "A", coming_soon=True, display="date_full", stamp=midnight),
+                                     details(1, coming_soon=True, date="2026 年 12 月 4 日"), NOW)
+        self.assertEqual((upcoming["release_start"], upcoming["release_store_date"], upcoming["release_coming_soon"]),
+                         ("2026-12-03", "2026-12-04", True))
+
+    def test_a_store_day_further_away_than_a_time_zone_keeps_the_store_day(self):
+        release = reference_release(browse(1, "A"), details(1, date="2024 年 6 月 20 日"), NOW)
+        self.assertEqual((release["release_start"], release["release_date_basis"]),
+                         ("2024-06-20", "steam_taiwan_store_date"))
+        self.assertNotIn("release_store_date", release)
 
     def test_upcoming_game_needs_an_exact_announced_day(self):
         future = int(datetime(2027, 3, 3, 16, tzinfo=timezone.utc).timestamp())
