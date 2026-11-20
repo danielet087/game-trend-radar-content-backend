@@ -6,6 +6,8 @@ Only data/media/, data/store_facts.json and the status file are written. A
 game gets a media file within one run of entering the catalog, is re-checked
 weekly, and loses its file when it leaves the catalog or is excluded. Price,
 CSRR rating and Steam Deck status are checked for every game on every run.
+The Steam versions of console games (data/steam_references.json) are treated
+the same way, so their game pages are built on the Steam version too.
 """
 from __future__ import annotations
 
@@ -24,6 +26,8 @@ from radar_backend.domain.steam_media import (MEDIA_DIR, RETRY_DELAY, SCHEMA_VER
 from radar_backend.domain.steam_store_facts import (FACTS_FILE, facts_document, needs_publication,
                                                     same_facts, store_facts)
 from radar_backend.domain.steam_store_facts import valid_document as valid_facts_document
+from radar_backend.domain.steam_references import REFERENCES_FILE
+from radar_backend.domain.steam_references import valid_document as valid_references_document
 from radar_backend.publication import catalog
 from radar_backend.publication.content_snapshot import strict_catalog
 from radar_backend.state.json_documents import load_json, write_json
@@ -53,6 +57,16 @@ def fetch_items(appids: list[int], data_request: dict = DATA_REQUEST) -> dict:
                          and row.get("success", 1) == 1 and row.get("visible") is not False})
             time.sleep(1)
     return rows
+
+
+def reference_appids(data_dir: Path) -> set[int]:
+    """Steam versions of public console games; an unreadable file adds none."""
+    path = data_dir / REFERENCES_FILE
+    try:
+        document = load_json(path) if path.is_file() else None
+    except (OSError, ValueError, TypeError):
+        return set()
+    return {row["appid"] for row in document["games"]} if valid_references_document(document) else set()
 
 
 def media_path(data_dir: Path, appid: int) -> Path:
@@ -118,8 +132,8 @@ def refresh(data_dir: Path, *, max_games: int = 300, max_seconds: int = 300,
     strict_catalog(data_dir, require_index=True)
     now = now or datetime.now(timezone.utc)
     blocked = catalog.excluded_public_appids(data_dir)
-    appids = sorted(int(load_json(path)["appid"]) for path in (data_dir / "games").glob("*.json"))
-    appids = [appid for appid in appids if appid not in blocked]
+    appids = {int(load_json(path)["appid"]) for path in (data_dir / "games").glob("*.json")}
+    appids = sorted(appid for appid in appids | reference_appids(data_dir) if appid not in blocked)
     status_path = data_dir / STATUS_FILE
     previous = load_json(status_path) if status_path.is_file() else {}
     checkpoints = {key: value for key, value in (previous.get("checkpoints") or {}).items()

@@ -85,6 +85,22 @@ python content_backend/localize_descriptions.py --data-dir /path/to/frontend/dat
 python content_backend/refresh_media.py --data-dir /path/to/frontend/data --max-games 300 --max-seconds 300
 ```
 
+## 主機遊戲的 Steam 版（`data/steam_references.json`）
+
+公開的主機遊戲（`data/nintendo_upcoming.json`）在 IGDB 上只連到一個 Steam 商品時，網站的遊戲頁改以那個 Steam 版為主。Steam 版不在 Steam 清單裡的，這裡另外存一份 Steam 參考資料，給遊戲頁合併用。這份資料**不是 Steam 收錄**：沒有 Followers、不進 Steam 月曆與清單、不產生雷達動態。
+
+- **哪些商品**：主機遊戲的 IGDB 網站欄只連到一個 Steam 商品（`steam_appid` 若有，必須一致；跟網站 `nintendoSteamIdentity` 同一條規則），而且這個商品不在 Steam 目錄、也沒被成人審核排除。
+- **名稱核對**：連到同一個商品的每一款主機遊戲，英文名稱都要對得上 Steam 的英文商品名。Steam 名稱可以多出分隔符號後的副標或版本（「KINGDOM HEARTS III + Re Mind (DLC)」「Mafia III: Definitive Edition」），或前後多出品牌字（「Disney Epic Mickey: Rebrushed」），但不能多出數字（「Hela 2」是另一款）；主機遊戲的名稱一個字都不能少，所以合輯（「KINGDOM HEARTS -HD 1.5+2.5 ReMIX-」）不會被當成其中一款。羅馬數字視同阿拉伯數字。
+- **內容篩選**：跟 Steam 收錄一樣用 `decide_content` 看同一個 AppID 的分級描述與商店介紹；被排除或待審的都不存。appdetails 的類型必須是 `game`。
+- **內容**：台灣商店的英文／繁中／簡中名稱（簡中轉繁）、語言支援、遊玩方式、發售日（照台灣商店顯示的日期；未上市只收已公布確切日期的）、圖片、簡介（同一套繁中／簡中轉繁／英文規則）、TAG 與類型。只留遊戲頁要讀的欄位，檔案不縮排（清單頁會跟目錄一起讀）。
+- **影音與售價**：這些 AppID 跟目錄遊戲一樣有 `data/media/{appid}.json` 與 `store_facts.json` 的資料；參考資料拿掉時一起移除。
+- **頻率**：每 3 天重查；主機遊戲的連結或名稱變了就立刻重查；失敗 6 小時後重試，已發布的那筆保留；429 停止當輪。每輪最多 60 款、150 秒，跑在影音更新同一個 workflow 的前一步。
+- **發布**：跟影音同一個發布（`publish_media`）。重播時以主線最新的主機清單、Steam 目錄與排除清單再過濾一次：主機遊戲下架、改連別的商品、商品進了 Steam 目錄，參考資料就拿掉。狀態檔 `data/steam_reference_status.json` 記每個商品最近一次的結果（`accepted`、`title_mismatch`、`excluded`、`content_review`、`not_a_game`、`unavailable`、`error`）。
+
+```sh
+python content_backend/refresh_references.py --data-dir /path/to/frontend/data --max-games 60 --max-seconds 150
+```
+
 ## 同步契約
 
 - `data/games/{appid}.json`：完整單款紀錄。
