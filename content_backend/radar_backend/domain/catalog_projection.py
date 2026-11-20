@@ -27,23 +27,16 @@ FIELDS = (
     "header_image_2x",
     "main_capsule_image",
     "main_capsule_image_2x",
-    "small_capsule_image",
-    "capsule_image",
     "tags",
     "genres",
-    "tag_ids",
     "tag_labels_zh_tw",
     "genre_labels_zh_tw",
-    "content_enriched_at",
-    "tags_fetch_status",
     "twitch_admission",
     "steam_type",
     "sexual_content_screened",
     "release_time_utc",
     "release_date_conflict",
-    "official_ge5000",
     "release_timestamp_taipei_date",
-    "content_descriptorids",
     "release_store_date",
     "release_date_normalization",
     "release_display_provider",
@@ -51,6 +44,20 @@ FIELDS = (
     "categories",
     "categories_source",
     "categories_checked_at",
+)
+
+# List pages never read these; a game page reads them from games/<appid>.json.
+# catalog.json carried them until 2026-11. A file written before then is still
+# an exact projection of the accepted records, so it stays valid until the
+# next write replaces it.
+RETIRED_FIELDS = (
+    "small_capsule_image",
+    "capsule_image",
+    "tag_ids",
+    "content_enriched_at",
+    "tags_fetch_status",
+    "official_ge5000",
+    "content_descriptorids",
     "short_description",
     "short_description_en",
     "short_description_language",

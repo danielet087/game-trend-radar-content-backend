@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import localize_descriptions as cli
 from radar_backend.domain.description_refresh import due_at, next_check, refresh_interval, select_due
+from radar_backend.domain.catalog_projection import RETIRED_FIELDS
 from radar_backend.adapters.content_helpers import SteamRateLimit
 from radar_backend.publication import catalog
 from radar_backend.publication.description_snapshot import FrozenDescriptionPublication, OWNED_PATHS, freeze
@@ -106,17 +107,18 @@ class DescriptionCollectionTests(unittest.TestCase):
         validate_snapshot(self.data, now=NOW)
 
     def test_no_due_games_still_migrate_derived_projection_from_valid_source_shards(self):
-        self.add(123, description_checked_at="2026-10-15T00:00:00Z")
+        shard = self.add(123, description_checked_at="2026-10-15T00:00:00Z")
         old = load_json(self.data / "catalog.json")
-        for row in old["games"]:
-            for key in list(row):
-                if key.startswith("short_description") or key.startswith("description_"):
-                    del row[key]
+        # Written before descriptions left the list projection: still exact, so a run may start from it.
+        old["games"] = [{**row, **{key: shard[key] for key in RETIRED_FIELDS if key in shard}} for row in old["games"]]
+        self.assertEqual(old["games"][0]["short_description"], "舊的有效中文介紹")
         write_json(self.data / "catalog.json", old)
+        validate_snapshot(self.data, now=NOW)
         with patch.object(cli, "fetch_locales") as fetch:
             cli.localize(self.data, now=NOW)
         fetch.assert_not_called()
-        self.assertEqual(load_json(self.data / "catalog.json")["games"][0]["short_description"], "舊的有效中文介紹")
+        self.assertNotIn("short_description", load_json(self.data / "catalog.json")["games"][0])
+        self.assertEqual(load_json(self.data / "games/123.json")["short_description"], "舊的有效中文介紹")
         validate_snapshot(self.data, now=NOW)
 
     def test_english_upgrades_when_official_chinese_arrives_without_english_change(self):

@@ -13,7 +13,7 @@ from unittest.mock import patch
 import public_catalog as legacy
 from radar_core.publication import SubprocessGitRepository, publish_with_retry
 from radar_backend.adapters import catalog_projection as canonical
-from radar_backend.domain.catalog_projection import catalog_payload, catalog_revision
+from radar_backend.domain.catalog_projection import FIELDS, RETIRED_FIELDS, catalog_payload, catalog_revision
 from radar_backend.publication import catalog
 from radar_backend.publication import content_snapshot
 from radar_backend.state.json_documents import load_json, write_json
@@ -102,8 +102,8 @@ class ProjectionConsistencyTests(unittest.TestCase):
 
     def test_matching_revision_rejects_wrong_payload_values_and_json_types(self):
         rows = [{"appid": 1, "name": "遊戲", "language_support": {"english": True},
-                 "tags": ["Action", "策略"], "content_descriptorids": [1],
-                 "official_ge5000": True}]
+                 "tags": ["Action", "策略"], "categories": [{"id": 1, "description": "Multi-player"}],
+                 "sexual_content_screened": True}]
         expected = catalog_payload(rows, "repair", catalog_revision(rows))
         changes = [
             {"version": 2}, {"version": 3.0}, {"version": True},
@@ -113,8 +113,8 @@ class ProjectionConsistencyTests(unittest.TestCase):
             {"games": [{**expected["games"][0], "appid": 1.0}]},
             {"games": [{**expected["games"][0], "language_support": {"english": 1}}]},
             {"games": [{**expected["games"][0], "tags": ["策略", "Action"]}]},
-            {"games": [{**expected["games"][0], "content_descriptorids": [True]}]},
-            {"games": [{**expected["games"][0], "official_ge5000": 1}]},
+            {"games": [{**expected["games"][0], "categories": [{"id": True, "description": "Multi-player"}]}]},
+            {"games": [{**expected["games"][0], "sexual_content_screened": 1}]},
             {"games": [{**expected["games"][0], "unexpected": "extra"}]},
         ]
         for api in (legacy, canonical):
@@ -125,6 +125,19 @@ class ProjectionConsistencyTests(unittest.TestCase):
                     self.assertEqual((self.data / "catalog.json").read_bytes(),
                                      (json.dumps(expected, ensure_ascii=False,
                                                  separators=(",", ":")) + "\n").encode())
+
+    def test_both_writers_slim_a_catalog_written_before_the_list_fields_were_trimmed(self):
+        rows = [REFRESHED_RECORD]
+        revision = catalog_revision(rows)
+        wide = catalog_payload(rows, "before", revision, fields=FIELDS + RETIRED_FIELDS)
+        self.assertEqual(wide["games"][0]["short_description"], REFRESHED_RECORD["short_description"])
+        for api in (legacy, canonical):
+            with self.subTest(api=api.__name__):
+                write_json(self.data / "catalog.json", wide)
+                api.write_catalog_projection(self.data, rows, "after")
+                written = load_json(self.data / "catalog.json")
+                self.assertEqual(written, catalog_payload(rows, "after", revision))
+                self.assertFalse(set(RETIRED_FIELDS) & set(written["games"][0]))
 
     def test_valid_payload_ignores_generated_at_and_keeps_exact_bytes_and_mtime(self):
         for api in (legacy, canonical):

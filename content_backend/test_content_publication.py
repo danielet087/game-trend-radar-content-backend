@@ -17,6 +17,7 @@ from radar_backend.publication.content_snapshot import (
     FrozenContentPublication, OWNED_PATHS, changed_paths, freeze_enrichment,
     freeze_reconciliation, strict_catalog, validate_snapshot, ACTIVITY_ORIGINS_PATH,
 )
+from radar_backend.domain.catalog_projection import RETIRED_FIELDS
 from radar_backend.state.json_documents import load_json, write_json
 from steam_player_modes import BROWSE_SOURCE
 
@@ -356,6 +357,26 @@ class ContentPublicationTests(LocalGitFixture):
         write_json(path, value)
         with self.assertRaisesRegex(RuntimeError, "projection"):
             validate_snapshot(self.frontend / "data")
+
+    def test_projection_written_before_the_list_fields_were_trimmed_stays_valid(self):
+        data = self.frontend / "data"
+        path = data / "catalog.json"
+        slim = load_json(path)
+        shard = load_json(data / "games/101.json")
+        wide = {**slim, "games": [{**row, **{key: shard[key] for key in RETIRED_FIELDS if key in shard}}
+                                  for row in slim["games"]]}
+        self.assertIn("content_enriched_at", wide["games"][0])
+        write_json(path, wide)
+        validate_snapshot(data)
+        # Any other shape is still corrupt: some retired fields only, or a kept one missing.
+        partial = copy.deepcopy(wide)
+        del partial["games"][0]["content_enriched_at"]
+        lacking = copy.deepcopy(slim)
+        del lacking["games"][0]["header_image"]
+        for value in (partial, lacking):
+            write_json(path, value)
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "projection"):
+                validate_snapshot(data)
 
     def test_latest_adult_exclusion_stops_publishing_cached_record(self):
         frozen = self.freeze()

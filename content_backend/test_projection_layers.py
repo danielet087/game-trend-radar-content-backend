@@ -78,6 +78,13 @@ class ProjectionRulesTests(unittest.TestCase):
         projected = rules.catalog_payload([row], "clock", "revision")["games"][0]
         self.assertEqual(tuple(projected), rules.FIELDS)
 
+    def test_retired_fields_are_disjoint_from_the_list_projection(self):
+        self.assertFalse(set(rules.FIELDS) & set(rules.RETIRED_FIELDS))
+        self.assertEqual(len(set(rules.FIELDS)), len(rules.FIELDS))
+        self.assertEqual(len(set(rules.RETIRED_FIELDS)), 12)
+        self.assertNotIn("short_description", rules.FIELDS)
+        self.assertIn("main_capsule_image", rules.FIELDS)
+
     def test_projection_excludes_nonbrowser_fields(self):
         payload = rules.catalog_payload(
             [{"appid": 1, "name": "One", "private": "hidden"}], "t", "r"
