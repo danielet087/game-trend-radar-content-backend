@@ -9,6 +9,20 @@ from datetime import datetime
 
 HAN = re.compile(r"[\u3400-\u9fff]")
 KANA = re.compile(r"[\u3041-\u3096\u30a1-\u30fa]")
+# Chinese copy quotes Japanese titles and names in their own script: 《ゼルダの伝説》,
+# 「…」, 瘋帽客（CV：小鹿なお）. Kana inside quotes and brackets or in voice credits
+# do not count; elsewhere Chinese copy may still carry a few (a name, a short
+# line). Only when kana are a fifth or more of the rest is the text Japanese:
+# Japanese prose is a third or more kana. A voice credit names short runs
+# without spaces or punctuation (family and given name may be split by one
+# space), listed with 、 or ／. Same rule as the console backend.
+QUOTED = re.compile(r"[《〈「『【（(\[][^《〈「『【（(\[》〉」』】）)\]\n]{0,40}[》〉」』】）)\]]")
+_CAST_LABEL = r"(?:(?<![A-Za-z])[Cc][Vv](?![A-Za-z])\s*[:：.．]?|ＣＶ\s*[:：]?|(?:聲優|声優|配音)\s*[:：])"
+_CAST_CHARS = r"[^\s、，,。！？!?()（）\[\]【】「」『』/／&＆:：]"
+_CAST_NAME = _CAST_CHARS + r"{1,12}(?:[ 　](?!" + _CAST_LABEL + r")" + _CAST_CHARS + r"{1,8})?"
+VOICE_CREDIT = re.compile(_CAST_LABEL + r"\s*" + _CAST_NAME
+                          + r"(?:\s*[、，,/／&＆]\s*(?!" + _CAST_LABEL + r")" + _CAST_NAME + r"){0,9}")
+KANA_SHARE = 0.2
 
 DESCRIPTION_CONTENT_KEYS = (
     "short_description", "short_description_en", "short_description_language",
@@ -36,9 +50,18 @@ def clean_description(value: object, *, re_module=re, html_module=html) -> str:
     return re_module.sub(r"\s+", " ", html_module.unescape(text)).strip()
 
 
+def japanese(value: str, *, han=HAN, kana=KANA) -> bool:
+    """Kana are a fifth or more of the Chinese and Japanese characters outside
+    quotes, brackets and voice credits."""
+    rest = VOICE_CREDIT.sub("", QUOTED.sub("", value))
+    kanas = len(kana.findall(rest))
+    return kanas > 0 and kanas >= (len(han.findall(rest)) + kanas) * KANA_SHARE
+
+
 def is_chinese(value: str, *, han=HAN, kana=KANA) -> bool:
-    # A Chinese-language request can silently return English or Japanese.
-    return len(han.findall(value)) >= 4 and not kana.search(value)
+    # A Chinese-language request can silently return English or Japanese; Chinese
+    # copy may still quote a Japanese title or name.
+    return len(han.findall(value)) >= 4 and not japanese(value, han=han, kana=kana)
 
 
 def description_fingerprint(english: str, *, hash_module=hashlib) -> str:
