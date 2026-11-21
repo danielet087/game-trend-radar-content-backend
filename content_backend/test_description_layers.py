@@ -52,6 +52,27 @@ class DescriptionDomainTests(unittest.TestCase):
                 self.assertFalse(domain.is_chinese("探索世界" + kana))
         self.assertTrue(domain.is_chinese("探索世界・冒險"))
 
+    def test_a_few_kana_quoted_titles_and_voice_credits_stay_chinese(self):
+        story = "踏上全新的冒險旅程，探索未知的世界。"
+        for text in (
+            "愛麗絲與夥伴們踏上旅程，瘋帽客（CV：小鹿なお）、三月兔（CV：花澤かな）也一起登場。",
+            "《ゼルダの伝説》系列最新作，與林克一起冒險！",
+            "主要角色：瘋帽客 CV：小鹿 なお／三月兔 CV:花澤かな 聲優：早見さおり、悠木碧 " + story,
+            "由小鹿なお配音的瘋帽客帶領玩家展開全新的冒險旅程。",
+            "愛麗絲與夥伴們踏上旅程，瘋帽客也一起登場。新しい冒険が始まる。",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(domain.is_chinese(text))
+        # Japanese prose is a third or more kana, quoted Chinese titles or not.
+        for text in (
+            "CV：小鹿なお。新しい冒険の世界を探索しましょう",
+            "《魔物獵人》の新作が登場します。",
+            story + "新しい冒険の世界を探索しましょう。仲間と一緒に強大な敵に立ち向かえ！",
+            "物語の世界を冒険するゲームです",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(domain.is_chinese(text))
+
     def test_fingerprint_hashes_clean_english_as_exact_utf8(self):
         self.assertEqual(
             domain.description_fingerprint("Café 世界"),

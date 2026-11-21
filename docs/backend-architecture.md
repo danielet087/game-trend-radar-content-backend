@@ -77,7 +77,7 @@ manifest 的 `input_revision` 由凍結 frontend／master Git SHA 算出，`payl
 
 分類只接受同一 AppID 的官方 Browse player IDs 或 appdetails categories，明確空列表是已查證的負向結果；功能／控制器 ID 不能冒稱多人證據。原有五分鐘未來時間上限、naive 時間拒絕、逐次時鐘讀取、短路順序、較新資料與獨立 Twitch／日期證據保持。Domain 的 release／metadata helpers 現要求明確的純 callbacks，runtime adapter 與舊入口保留原呼叫介面。ReconcilePorts 保留原 14 個 positional arguments，追加規則與檔案存在性 ports；正式 composition 顯式供應，application 不直接讀取 filesystem 或實際 wall clock，既有文字報告保留。
 
-Taxonomy 使用原 parser，不改 regex、AppID／zh-TW 要求、20 個 tag 上限、穩定 tag 身分、genre URL 或錯誤範圍。Descriptions 保留至少四個漢字且排除日文假名的規則、OpenCC `s2twp`、繁中 → 簡中 → editorial 的順序；只有官方內容不合格才讀取版本化翻譯 JSON。來源 SHA-256 不符不沿用翻譯，`unavailable` 會按原契約清除舊中文描述，locale 與文字一起合併；`lru_cache(maxsize=1)` 的 reference、clear／info 及讀取失敗行為保持。
+Taxonomy 使用原 parser，不改 regex、AppID／zh-TW 要求、20 個 tag 上限、穩定 tag 身分、genre URL 或錯誤範圍。Descriptions 保留至少四個漢字且排除日文的規則（2026-11-21 起：括號、引號裡的作品名與角色名、聲優名單不算，其餘部分假名占中日文字兩成以上才算日文，跟主機後端同一條）、OpenCC `s2twp`、繁中 → 簡中 → editorial 的順序；只有官方內容不合格才讀取版本化翻譯 JSON。來源 SHA-256 不符不沿用翻譯，`unavailable` 會按原契約清除舊中文描述，locale 與文字一起合併；`lru_cache(maxsize=1)` 的 reference、clear／info 及讀取失敗行為保持。
 
 Catalog revision 仍由所有 accepted rows 的 canonical JSON 計算 SHA-256 前 20 碼，而非只雜湊 browser 欄位；描述等 metadata 更新也會使 revision 改變。公開欄位、version 3、UTF-8 compact JSON、來源順序、同 revision 不寫入、舊檔讀取容錯與錯形例外維持。兩個既有 publication 模組除 imports 外本體不變，凍結批次、strict JSON、partial／superseded、有限重試、空 diff 真實 push 及成功收據仍由原發布流程負責。
 
