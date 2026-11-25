@@ -199,13 +199,18 @@ class TwitchAdmissionTests(unittest.TestCase):
         details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []}}
         for release in [
             {'date': '2026-09-07', 'coming_soon': False},
-            {'date': '2026-09-10', 'coming_soon': False},
             {'date': 'September 2026', 'coming_soon': False},
             {'date': '2026-09-08', 'coming_soon': True},
             {'date': '2026-09-08'},
         ]:
             with self.subTest(release=release), self.assertRaisesRegex(RuntimeError, 'matching exact'):
                 build(base=base, details={**details, 'release_date': release}, event_release_date='2026-09-09')
+        # A Store day one day after Taiwan's (a midnight launch in Japan) is a
+        # time zone: Taiwan's day of the release time decides (core #70).
+        record = build(base=base, details={**details, 'release_date': {'date': '2026-09-10', 'coming_soon': False}},
+                       event_release_date='2026-09-09')
+        self.assertEqual((record['release_start'], record['release_store_date']), ('2026-09-09', '2026-09-10'))
+        self.assertEqual(record['release_date_normalization'], 'steam_release_time_taipei')
 
     def test_matching_taipei_store_day_records_date_evidence(self):
         instant = datetime.fromisoformat('2026-09-08T16:00:00+00:00')
@@ -217,24 +222,27 @@ class TwitchAdmissionTests(unittest.TestCase):
         self.assertEqual(record['release_store_date'], '2026-09-09')
         self.assertEqual(record['release_date_normalization'], 'steam_store_date_matches_taipei')
 
-    def test_onimusha_store_day_is_used_and_actual_timestamp_is_preserved(self):
+    def test_onimusha_takes_taiwans_day_and_keeps_the_store_day(self):
+        # The Store says 9/03; the release time is 9/04 12:02 in Taiwan (core #70).
         base = mocks(name='Onimusha: Way of the Sword', release={
             'steam_release_date': 1788494534, 'is_coming_soon': False,
         })
         details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
                    'release_date': {'date': '2026 年 9 月 3 日', 'coming_soon': False}}
-        record = build(base=base, details=details, event_release_date='2026-09-03', followers=0)
+        record = build(base=base, details=details, event_release_date='2026-09-04', followers=0)
         self.assertTrue(is_twitch_qualified(record))
-        self.assertTrue(has_taiwan_store_date_authority(record))
-        self.assertEqual(record['release_start'], '2026-09-03')
-        self.assertEqual(record['release_end'], '2026-09-03')
+        self.assertFalse(has_taiwan_store_date_authority(record))
+        self.assertEqual(record['release_start'], '2026-09-04')
+        self.assertEqual(record['release_end'], '2026-09-04')
         self.assertEqual(record['release_store_date'], '2026-09-03')
         self.assertEqual(record['release_time_utc'], '2026-09-04T04:02:14Z')
         self.assertEqual(record['release_timestamp_taipei_date'], '2026-09-04')
-        self.assertTrue(record['release_date_conflict'])
-        self.assertEqual(record['release_date_normalization'], TW_STORE_DATE_AUTHORITY)
-        self.assertEqual(record['release_display_provider'], TW_STORE_DATE_PROVIDER)
+        self.assertFalse(record['release_date_conflict'])
+        self.assertEqual(record['release_date_normalization'], 'steam_release_time_taipei')
         self.assertIsNotNone(record['release_date_verified_at'])
+        # A master row still on the Store day must move first (Steam backend #72).
+        with self.assertRaisesRegex(RuntimeError, 'timestamp does not agree'):
+            build(base=base, details=details, event_release_date='2026-09-03', followers=0)
 
     def test_visible_released_day_can_disagree_with_a_future_browse_instant(self):
         base = mocks(release={'steam_release_date': 1893456000, 'is_coming_soon': False})
@@ -257,14 +265,17 @@ class TwitchAdmissionTests(unittest.TestCase):
         self.assertIsNone(resolve_store_release_day('2030-01-03', record['release_time_utc']))
 
     def test_date_authority_cannot_replace_exact_store_evidence_or_identity(self):
+        # The Store-day authority remains only for a gap wider than one day:
+        # the Store says 9/02, the release time is 9/04 in Taiwan.
         base = mocks(release={'steam_release_date': 1788494534, 'is_coming_soon': False})
         details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},
-                   'release_date': {'date': '2026-09-03', 'coming_soon': False}}
-        source = build(base=base, details=details, event_release_date='2026-09-03')
+                   'release_date': {'date': '2026-09-02', 'coming_soon': False}}
+        source = build(base=base, details=details, event_release_date='2026-09-02')
+        self.assertTrue(has_taiwan_store_date_authority(source))
         for changes in [
             {'release_store_date': '2026-09'}, {'release_store_date': '2026-09-04'},
             {'release_end': '2026-09-04'}, {'release_date_verified_at': '2026-10-03'},
-            {'release_display_provider': 'Steam'}, {'release_timestamp_taipei_date': '2026-09-03'},
+            {'release_display_provider': 'Steam'}, {'release_timestamp_taipei_date': '2026-09-02'},
             {'release_date_conflict': False}, {'release_date_conflict': 1},
             {'release_time_utc': None}, {'twitch_admission': None}, {'steam_type': 'dlc'},
             {'sexual_content_screened': False}, {'followers': None}, {'follower_checked_at': None},
@@ -272,10 +283,10 @@ class TwitchAdmissionTests(unittest.TestCase):
             with self.subTest(changes=changes):
                 self.assertFalse(is_twitch_qualified(dict(source, **changes)))
         for visible in [{'date': 'September 2026', 'coming_soon': False},
-                        {'date': '2026-09-03', 'coming_soon': True},
-                        {'date': '2026-09-03'}, {'date': '2026-09-02', 'coming_soon': False}]:
+                        {'date': '2026-09-02', 'coming_soon': True},
+                        {'date': '2026-09-02'}, {'date': '2026-09-01', 'coming_soon': False}]:
             with self.subTest(visible=visible), self.assertRaises(RuntimeError):
-                build(base=base, details={**details, 'release_date': visible}, event_release_date='2026-09-03')
+                build(base=base, details={**details, 'release_date': visible}, event_release_date='2026-09-02')
 
     def test_authoritative_date_survives_calendar_projection_and_reconcile(self):
         details = {'type': 'game', 'steam_appid': 123, 'content_descriptors': {'ids': []},

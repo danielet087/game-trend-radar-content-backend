@@ -1,7 +1,7 @@
 """Preserve verified release and admission evidence without storage access."""
 
 from datetime import datetime, timezone
-from radar_core.domain.twitch_admission import aware_time, preserve_twitch_admission
+from radar_core.domain.twitch_admission import aware_time, preserve_twitch_admission, taipei_release_day
 from typing import Callable
 
 from radar_backend.domain.content import TAIPEI
@@ -55,6 +55,10 @@ def keep_newer_release(
             else:
                 result.pop(key, None)
         backfill_release_diagnostics(result)
+        # A kept Store-day admission one day off its release time takes
+        # Taiwan's day, as the Steam master's rows do (core #70). The date
+        # confirmation time stays as it was.
+        result = taipei_release_day(result)
     return result
 
 
