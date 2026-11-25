@@ -6,8 +6,8 @@ import unittest
 
 import refresh_media as cli
 from radar_backend.domain.steam_store_facts import (advance_access, descriptors, early_access, facts_document,
-                                                    needs_publication, price, rating, steam_deck, store_facts,
-                                                    valid_document)
+                                                    needs_publication, price, rating, release, steam_deck,
+                                                    store_facts, valid_document)
 from radar_backend.publication import catalog
 from radar_backend.publication.media_snapshot import freeze
 from radar_backend.state.json_documents import load_json, write_json
@@ -33,7 +33,7 @@ class StoreFactParsingTests(unittest.TestCase):
             "price": {"free": False, "final_cents": 44800, "original_cents": 56100, "discount_pct": 20,
                       "discount_ends_at": "2026-11-30T18:00:00Z"},
             "rating": {"code": "C15", "label": "輔15級", "descriptors": ["暴力", "不當言語"]},
-            "steam_deck": "verified", "advance_access": None, "early_access": None})
+            "steam_deck": "verified", "advance_access": None, "early_access": None, "release": None})
 
     def test_descriptors_normalize_chinese_english_split_and_joined_names(self):
         self.assertEqual(descriptors(["性,", "暴力,", "不當言語"]), ["性", "暴力", "不當言語"])
@@ -98,6 +98,13 @@ class StoreFactParsingTests(unittest.TestCase):
             self.assertFalse(valid_document(facts_document({"123": broken}, "2026-11-19T02:00:00Z", "store")))
         older = {key: value for key, value in entry.items() if key != "early_access"}
         self.assertTrue(valid_document(facts_document({"123": older}, "2026-11-19T02:00:00Z", "store")))
+        dated = {**entry, "release": {"at": "2026-12-04T17:00:00Z", "coming_soon": None, "display": None}}
+        self.assertTrue(valid_document(facts_document({"123": dated}, "2026-11-19T02:00:00Z", "store")))
+        for broken in ({**entry, "release": {"at": "soon", "coming_soon": True, "display": "date_full"}},
+                       {**entry, "release": {"at": "2026-12-04T17:00:00Z", "coming_soon": 1, "display": None}},
+                       {**entry, "release": {"at": "2026-12-04T17:00:00Z", "coming_soon": True, "display": "soon"}},
+                       {**entry, "release": {"at": "2026-12-04T17:00:00Z", "coming_soon": True}}):
+            self.assertFalse(valid_document(facts_document({"123": broken}, "2026-11-19T02:00:00Z", "store")))
 
 
 RELEASE = 1796403600  # 2026-12-04T17:00:00Z
@@ -182,6 +189,30 @@ class EarlyAccessTests(unittest.TestCase):
         self.assertEqual(early_access(store_item(release={"is_early_access": True}),
                                       {"active": True, "started_at": None, "full_release_at": None}),
                          {"active": True, "started_at": None, "full_release_at": None})
+
+
+class ReleaseTests(unittest.TestCase):
+    """Steam's current release time, which the Steam backend compares with the catalog."""
+
+    def test_a_coming_soon_full_date_a_vaguer_date_and_a_release(self):
+        self.assertEqual(release(upcoming(coming_soon_display="date_full")),
+                         {"at": "2026-12-04T17:00:00Z", "coming_soon": True, "display": "date_full"})
+        # A game moved to "Q1 2027": Steam keeps a placeholder time at the quarter's end.
+        self.assertEqual(release(upcoming(steam_release_date=1806476400, coming_soon_display="date_quarter")),
+                         {"at": "2027-03-31T07:00:00Z", "coming_soon": True, "display": "date_quarter"})
+        released = store_item(release={"steam_release_date": EA_START, "is_coming_soon": False})
+        self.assertEqual(store_facts(123, released)["release"],
+                         {"at": "2026-09-20T12:00:00Z", "coming_soon": False, "display": None})
+
+    def test_steam_not_saying_is_kept_as_unknown(self):
+        self.assertEqual(release(store_item(release={"steam_release_date": EA_START, "coming_soon_display": "later"})),
+                         {"at": "2026-09-20T12:00:00Z", "coming_soon": None, "display": None})
+        self.assertEqual(release(store_item(is_coming_soon=True, release={"steam_release_date": str(EA_START)}))["coming_soon"],
+                         True)
+        for value in (None, "soon", -5, 10 ** 12, True):
+            with self.subTest(value=value):
+                self.assertIsNone(release(store_item(release={"steam_release_date": value})))
+        self.assertIsNone(release(store_item()))
 
 
 class StoreFactRefreshTests(MediaPublicationTests):

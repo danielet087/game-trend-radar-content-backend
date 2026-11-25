@@ -15,6 +15,12 @@ release, which may come years later. Steam says whether a game is in it
 (release.is_early_access) and when it leaves it
 (release.release_from_early_access_date); once it has left, the Steam
 release date is the full release.
+
+The release record is Steam's current release time (release.steam_release_date),
+whether the game is still coming soon, and how the Store shows the date
+(release.coming_soon_display, e.g. "date_full" or "date_quarter"). The Steam
+backend compares it with the catalog four times a day, so a game moved after
+its date was last confirmed is caught at once.
 """
 from __future__ import annotations
 
@@ -200,6 +206,25 @@ def early_access(item: dict, earlier: dict | None = None) -> dict | None:
     return {"active": active, "started_at": _stamp(started), "full_release_at": _stamp(full)}
 
 
+# How the Store shows a coming-soon date: a full date, or only a month,
+# quarter, year or text. Anything else is kept as unknown (None).
+DISPLAYS = ("date_full", "date_month", "date_quarter", "date_year", "text_comingsoon", "text_tba")
+
+
+def release(item: dict) -> dict | None:
+    """Steam's current release time, whether the game is still coming soon
+    (None when Steam does not say), and how the Store shows the date; None
+    without a usable time."""
+    info = _release(item)
+    at = _instant(info.get("steam_release_date"))
+    if at is None:
+        return None
+    flag = next((value for value in (info.get("is_coming_soon"), item.get("is_coming_soon"))
+                 if type(value) is bool), None)
+    display = info.get("coming_soon_display")
+    return {"at": timestamp(at), "coming_soon": flag, "display": display if display in DISPLAYS else None}
+
+
 def store_facts(appid: int, item: dict, packages: dict | None = None, earlier: dict | None = None) -> dict:
     """The page-facing facts from one Store Browse item (and its edition
     packages); no timestamps. ``earlier`` is the game's last Early Access record."""
@@ -207,10 +232,10 @@ def store_facts(appid: int, item: dict, packages: dict | None = None, earlier: d
         raise ValueError(f"Steam store item does not belong to AppID {appid}")
     return {"price": price(item), "rating": rating(item), "steam_deck": steam_deck(item),
             "advance_access": advance_access(item, packages),
-            "early_access": early_access(item, earlier)}
+            "early_access": early_access(item, earlier), "release": release(item)}
 
 
-FACT_KEYS = ("price", "rating", "steam_deck", "advance_access", "early_access")
+FACT_KEYS = ("price", "rating", "steam_deck", "advance_access", "early_access", "release")
 
 
 def same_facts(entry: object, facts: dict) -> bool:
@@ -270,6 +295,14 @@ def _valid_early_access(value: object) -> bool:
     return not (started and full and full <= started)
 
 
+def _valid_release(value: object) -> bool:
+    if value is None:
+        return True
+    return (isinstance(value, dict) and set(value) == {"at", "coming_soon", "display"}
+            and aware_time(value["at"]) is not None and (value["coming_soon"] is None or type(value["coming_soon"]) is bool)
+            and value["display"] in (None, *DISPLAYS))
+
+
 def valid_entry(entry: object) -> bool:
     if not isinstance(entry, dict) or aware_time(entry.get("checked_at")) is None:
         return False
@@ -282,7 +315,8 @@ def valid_entry(entry: object) -> bool:
     return (_valid_price(entry.get("price")) and rating_ok
             and entry.get("steam_deck") in (None, *DECK.values())
             and _valid_advance_access(entry.get("advance_access"))
-            and _valid_early_access(entry.get("early_access")))
+            and _valid_early_access(entry.get("early_access"))
+            and _valid_release(entry.get("release")))
 
 
 def valid_document(document: object) -> bool:
