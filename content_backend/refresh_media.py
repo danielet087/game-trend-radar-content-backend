@@ -5,7 +5,9 @@ python content_backend/refresh_media.py --data-dir /path/to/frontend/data
 Only data/media/, data/store_facts.json and the status file are written. A
 game gets a media file within one run of entering the catalog, is re-checked
 weekly, and loses its file when it leaves the catalog or is excluded. Price,
-CSRR rating and Steam Deck status are checked for every game on every run.
+CSRR rating, Steam Deck status and Advance Access are checked for every game on
+every run; for Advance Access the edition packages of coming-soon games are
+read as well.
 The Steam versions of console games (data/steam_references.json) are treated
 the same way, so their game pages are built on the Steam version too.
 """
@@ -23,8 +25,8 @@ from radar_backend.adapters.content_helpers import STORE_BROWSE, SteamRateLimit,
 from radar_backend.domain.steam_media import (MEDIA_DIR, RETRY_DELAY, SCHEMA_VERSION, STATUS_FILE, due_at,
                                               media_content, media_document, retry_pending, same_content,
                                               timestamp, valid_document)
-from radar_backend.domain.steam_store_facts import (FACTS_FILE, facts_document, needs_publication,
-                                                    same_facts, store_facts)
+from radar_backend.domain.steam_store_facts import (FACTS_FILE, aware_time, coming_soon, edition_packages,
+                                                    facts_document, needs_publication, same_facts, store_facts)
 from radar_backend.domain.steam_store_facts import valid_document as valid_facts_document
 from radar_backend.domain.steam_references import REFERENCES_FILE
 from radar_backend.domain.steam_references import valid_document as valid_references_document
@@ -35,16 +37,17 @@ from radar_backend.state.json_documents import load_json, write_json
 BATCH_SIZE = 50
 DATA_REQUEST = {"include_assets": True, "include_screenshots": True, "include_trailers": True,
                 "include_basic_info": True}
-FACTS_REQUEST = {"include_ratings": True, "include_platforms": True, "include_all_purchase_options": True}
+FACTS_REQUEST = {"include_ratings": True, "include_platforms": True, "include_all_purchase_options": True,
+                 "include_release": True}
+PACKAGE_REQUEST = {"include_release": True}
 
 
-def fetch_items(appids: list[int], data_request: dict = DATA_REQUEST) -> dict:
-    """Fresh Taiwan Store Browse items keyed by AppID string."""
-    rows = {}
+def _browse(ids: list[dict], data_request: dict):
+    """Taiwan Store Browse items for the given IDs, one batch at a time."""
     with requests.Session() as session:
         session.headers["User-Agent"] = "GameTrendRadar/steam-media"
-        for start in range(0, len(appids), BATCH_SIZE):
-            payload = {"ids": [{"appid": appid} for appid in appids[start:start + BATCH_SIZE]],
+        for start in range(0, len(ids), BATCH_SIZE):
+            payload = {"ids": ids[start:start + BATCH_SIZE],
                        "context": {"country_code": "TW", "language": "tchinese", "steam_realm": 1},
                        "data_request": data_request}
             data = request_json(session, STORE_BROWSE,
@@ -52,10 +55,25 @@ def fetch_items(appids: list[int], data_request: dict = DATA_REQUEST) -> dict:
             items = (data.get("response") or {}).get("store_items")
             if not isinstance(items, list):
                 raise RuntimeError("Malformed Steam media response")
-            rows.update({str(row["appid"]): row for row in items
-                         if isinstance(row, dict) and type(row.get("appid")) is int
-                         and row.get("success", 1) == 1 and row.get("visible") is not False})
+            yield [row for row in items if isinstance(row, dict) and row.get("success", 1) == 1]
             time.sleep(1)
+
+
+def fetch_items(appids: list[int], data_request: dict = DATA_REQUEST) -> dict:
+    """Fresh Taiwan Store Browse items keyed by AppID string."""
+    rows = {}
+    for items in _browse([{"appid": appid} for appid in appids], data_request):
+        rows.update({str(row["appid"]): row for row in items
+                     if type(row.get("appid")) is int and row.get("visible") is not False})
+    return rows
+
+
+def fetch_packages(packageids: list[int]) -> dict:
+    """Release information of edition packages keyed by package ID string."""
+    wanted, rows = set(packageids), {}
+    for items in _browse([{"packageid": packageid} for packageid in packageids], PACKAGE_REQUEST):
+        rows.update({str(row["id"]): row for row in items
+                     if type(row.get("id")) is int and row["id"] in wanted and row.get("item_type", 1) == 1})
     return rows
 
 
@@ -85,8 +103,14 @@ def load_document(data_dir: Path, appid: int) -> dict | None:
     return document if valid_document(document, appid) else None
 
 
-def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=fetch_items) -> dict:
-    """Check every game; a failed batch keeps each game's last confirmed values."""
+def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=fetch_items,
+                        packages=fetch_packages) -> dict:
+    """Check every game; a failed batch keeps each game's last confirmed values.
+
+    Advance Access that has begun stays on record when Steam stops returning
+    it, as it may after the full release; a start still to come is dropped
+    once Steam no longer lists it.
+    """
     path = data_dir / FACTS_FILE
     try:
         previous = load_json(path) if path.is_file() else None
@@ -95,6 +119,7 @@ def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=
     previous = previous if valid_facts_document(previous) else None
     old = (previous or {}).get("games", {})
     games, changed, failed, stop_reason = {}, [], [], ""
+    package_count, package_failed = 0, []
     for offset in range(0, len(appids), BATCH_SIZE):
         batch = appids[offset:offset + BATCH_SIZE]
         items = {}
@@ -105,11 +130,24 @@ def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=
                 if isinstance(error, SteamRateLimit):
                     stop_reason = "steam_rate_limit"
                 items = None
+        # Only coming-soon games can still offer Advance Access.
+        wanted = sorted({packageid for item in (items or {}).values()
+                         if isinstance(item, dict) and coming_soon(item) for packageid in edition_packages(item)})
+        found = {}
+        if wanted and not stop_reason:
+            try:
+                found = packages(wanted)
+                package_count += len(wanted)
+            except (RuntimeError, requests.RequestException, ValueError, TypeError) as error:
+                if isinstance(error, SteamRateLimit):
+                    stop_reason = "steam_rate_limit"
+                found = None
         for appid in batch:
             key = str(appid)
             item = (items or {}).get(key)
             try:
-                facts = store_facts(appid, item) if item is not None else None
+                facts = (store_facts(appid, item, found if coming_soon(item) else None)
+                         if isinstance(item, dict) else None)
             except ValueError:
                 facts = None
             if facts is None:
@@ -117,6 +155,13 @@ def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=
                 if key in old:
                     games[key] = old[key]
                 continue
+            # Packages that could not be read leave the last known Advance Access.
+            unchecked = found is None and coming_soon(item) and bool(edition_packages(item))
+            if unchecked:
+                package_failed.append(appid)
+            earlier = (old.get(key) or {}).get("advance_access")
+            if facts["advance_access"] is None and earlier and (unchecked or aware_time(earlier["starts_at"]) <= now):
+                facts["advance_access"] = earlier
             games[key] = {**facts, "checked_at": timestamp(now)}
             if not same_facts(old.get(key), facts):
                 changed.append(appid)
@@ -124,11 +169,14 @@ def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=
     publish = needs_publication(previous, document, now)
     write_json(path, document)
     return {"facts_game_count": len(games), "facts_changed_appids": changed, "facts_failed_appids": failed,
+            "facts_package_count": package_count, "facts_package_failed_appids": package_failed,
+            "facts_advance_access_appids": sorted(int(key) for key, entry in games.items()
+                                                  if entry.get("advance_access")),
             "facts_publish": publish, "facts_stop_reason": stop_reason}
 
 
 def refresh(data_dir: Path, *, max_games: int = 300, max_seconds: int = 300,
-            now: datetime | None = None, fetch=fetch_items) -> dict:
+            now: datetime | None = None, fetch=fetch_items, packages=fetch_packages) -> dict:
     strict_catalog(data_dir, require_index=True)
     now = now or datetime.now(timezone.utc)
     blocked = catalog.excluded_public_appids(data_dir)
@@ -193,7 +241,7 @@ def refresh(data_dir: Path, *, max_games: int = 300, max_seconds: int = 300,
             checkpoints[str(appid)] = {"attempted_at": timestamp(now), "checked_at": timestamp(now),
                                        "outcome": "success"}
 
-    facts = refresh_store_facts(data_dir, appids, now, fetch)
+    facts = refresh_store_facts(data_dir, appids, now, fetch, packages)
     deadlines = {appid: due_at(checkpoints.get(str(appid), {}), documents[appid] is not None) for appid in appids}
     retry = retry_pending(appids, checkpoints)
     pending = sorted({appid for appid in appids if deadlines[appid] <= now} | set(retry))

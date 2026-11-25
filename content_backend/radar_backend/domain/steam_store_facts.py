@@ -1,9 +1,14 @@
-"""Taiwan Steam price, CSRR rating and Steam Deck status for every catalog game.
+"""Taiwan Steam price, CSRR rating, Steam Deck status and Advance Access for every catalog game.
 
 One small file, data/store_facts.json, is checked on every media run (four
 times a day) for all games, unlike the weekly media files: prices change with
 sales. Each game keeps the time Steam last confirmed its values, so the page
 can say how fresh a price is.
+
+Advance Access lets buyers of some editions play before the full release
+(https://partner.steamgames.com/doc/store/advancedaccess). Steam stages its
+start on the edition packages, so the packages of a coming-soon game are read
+too; the start is release.advance_access_date, as on the Store page itself.
 """
 from __future__ import annotations
 
@@ -96,14 +101,77 @@ def steam_deck(item: dict) -> str | None:
     return DECK.get(category) if type(category) is int else None
 
 
-def store_facts(appid: int, item: dict) -> dict:
-    """The page-facing facts from one Store Browse item; no timestamps."""
+def _release(item: object) -> dict:
+    release = item.get("release") if isinstance(item, dict) else None
+    return release if isinstance(release, dict) else {}
+
+
+def _instant(value: object) -> datetime | None:
+    """A Store Browse Unix time; anything else, or an implausible year, is unknown."""
+    text = str(value) if type(value) in (int, str) else ""
+    if not text.isascii() or not text.isdigit():
+        return None
+    try:
+        moment = datetime.fromtimestamp(int(text), timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return moment if 2010 <= moment.year <= 2100 else None
+
+
+def coming_soon(item: dict) -> bool:
+    return _release(item).get("is_coming_soon") is True or item.get("is_coming_soon") is True
+
+
+def edition_packages(item: dict) -> dict[int, str | None]:
+    """The packages (editions) a game sells, with their Store names."""
+    options = [*(item.get("purchase_options") or []), item.get("best_purchase_option")]
+    found = {}
+    for option in options:
+        if not isinstance(option, dict) or type(option.get("packageid")) is not int or option["packageid"] <= 0:
+            continue
+        name = option.get("purchase_option_name")
+        if found.get(option["packageid"]) is None:
+            found[option["packageid"]] = name.strip() if isinstance(name, str) and name.strip() else None
+    return found
+
+
+def advance_access(item: dict, packages: dict | None) -> dict | None:
+    """When some editions can be played before the full release, and which ones.
+
+    ``packages`` maps a package ID string to its Store Browse item. The start
+    is the earliest one found; it must come before the full release.
+    """
+    starts, editions = [], []
+    start = _instant(_release(item).get("advance_access_date"))
+    if start:
+        starts.append(start)
+    for packageid, name in edition_packages(item).items():
+        row = (packages or {}).get(str(packageid))
+        start = _instant(_release(row).get("advance_access_date"))
+        if not start:
+            continue
+        starts.append(start)
+        label = name or (row["name"].strip() if isinstance(row.get("name"), str) and row["name"].strip() else None)
+        if label and label not in editions:
+            editions.append(label)
+    if not starts:
+        return None
+    full = _instant(_release(item).get("steam_release_date"))
+    if full and min(starts) >= full:
+        return None
+    return {"starts_at": timestamp(min(starts)), "editions": editions}
+
+
+def store_facts(appid: int, item: dict, packages: dict | None = None) -> dict:
+    """The page-facing facts from one Store Browse item (and its edition
+    packages); no timestamps."""
     if not isinstance(item, dict) or item.get("appid") != appid:
         raise ValueError(f"Steam store item does not belong to AppID {appid}")
-    return {"price": price(item), "rating": rating(item), "steam_deck": steam_deck(item)}
+    return {"price": price(item), "rating": rating(item), "steam_deck": steam_deck(item),
+            "advance_access": advance_access(item, packages)}
 
 
-FACT_KEYS = ("price", "rating", "steam_deck")
+FACT_KEYS = ("price", "rating", "steam_deck", "advance_access")
 
 
 def same_facts(entry: object, facts: dict) -> bool:
@@ -134,6 +202,15 @@ def _valid_price(value: object) -> bool:
     return ends is None or aware_time(ends) is not None
 
 
+def _valid_advance_access(value: object) -> bool:
+    if value is None:
+        return True
+    editions = value.get("editions") if isinstance(value, dict) else None
+    return (set(value) == {"starts_at", "editions"} and aware_time(value["starts_at"]) is not None
+            and isinstance(editions, list) and len(editions) <= 20
+            and all(isinstance(name, str) and name.strip() for name in editions))
+
+
 def valid_entry(entry: object) -> bool:
     if not isinstance(entry, dict) or aware_time(entry.get("checked_at")) is None:
         return False
@@ -144,7 +221,8 @@ def valid_entry(entry: object) -> bool:
         and isinstance(rating_value.get("descriptors"), list)
         and all(isinstance(name, str) for name in rating_value["descriptors"]))
     return (_valid_price(entry.get("price")) and rating_ok
-            and entry.get("steam_deck") in (None, *DECK.values()))
+            and entry.get("steam_deck") in (None, *DECK.values())
+            and _valid_advance_access(entry.get("advance_access")))
 
 
 def valid_document(document: object) -> bool:

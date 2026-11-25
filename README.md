@@ -85,6 +85,13 @@ python content_backend/localize_descriptions.py --data-dir /path/to/frontend/dat
 python content_backend/refresh_media.py --data-dir /path/to/frontend/data --max-games 300 --max-seconds 300
 ```
 
+## 售價、分級、Steam Deck 與提前玩（`data/store_facts.json`）
+
+同一個工作每一輪都查全部遊戲（台灣 Store Browse，一次 50 款）：售價與特價、台灣分級、Steam Deck 狀態，以及 Steam 的 **Advance Access**（買部分版本可以在正式上市前先玩，https://partner.steamgames.com/doc/store/advancedaccess）。每款記下 Steam 最後確認的時間。
+
+- **提前玩怎麼查**：Steam 把開始時間放在版本（package）的上市資料 `release.advance_access_date`，商店頁也是讀這個。所以還沒上市、有販售版本的遊戲，會再用 package ID 查一次這些版本（一輪通常多 1～2 個請求）。存成 `advance_access: {starts_at, editions}`，`editions` 是有提前玩的版本名稱；開始時間要早於正式上市才算。
+- **保留規則**：版本查不到（Steam 錯誤或 429）時保留上次的結果；已經開始的提前玩，正式上市後 Steam 不再回傳也繼續保留；還沒開始、Steam 卻不再列出的就拿掉。
+
 ## 主機遊戲的 Steam 版（`data/steam_references.json`）
 
 公開的主機遊戲（`data/nintendo_upcoming.json`）在 IGDB 上只連到一個 Steam 商品時，網站的遊戲頁改以那個 Steam 版為主。Steam 版不在 Steam 清單裡的，這裡另外存一份 Steam 參考資料，給遊戲頁合併用。這份資料**不是 Steam 收錄**：沒有 Followers、不進 Steam 月曆與清單、不產生雷達動態。
