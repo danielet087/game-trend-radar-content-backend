@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 import refresh_media as cli
-from radar_backend.domain.steam_store_facts import (advance_access, descriptors, facts_document,
+from radar_backend.domain.steam_store_facts import (advance_access, descriptors, early_access, facts_document,
                                                     needs_publication, price, rating, steam_deck, store_facts,
                                                     valid_document)
 from radar_backend.publication import catalog
@@ -33,7 +33,7 @@ class StoreFactParsingTests(unittest.TestCase):
             "price": {"free": False, "final_cents": 44800, "original_cents": 56100, "discount_pct": 20,
                       "discount_ends_at": "2026-11-30T18:00:00Z"},
             "rating": {"code": "C15", "label": "輔15級", "descriptors": ["暴力", "不當言語"]},
-            "steam_deck": "verified", "advance_access": None})
+            "steam_deck": "verified", "advance_access": None, "early_access": None})
 
     def test_descriptors_normalize_chinese_english_split_and_joined_names(self):
         self.assertEqual(descriptors(["性,", "暴力,", "不當言語"]), ["性", "暴力", "不當言語"])
@@ -89,8 +89,15 @@ class StoreFactParsingTests(unittest.TestCase):
                        {**entry, "advance_access": {"starts_at": "2026-12-01T17:00:00Z", "editions": [""]}},
                        {**entry, "advance_access": {"starts_at": "2026-12-01T17:00:00Z"}},
                        {**entry, "advance_access": {"starts_at": "2026-12-01T17:00:00Z", "editions": [],
-                                                    "days": 3}}):
+                                                    "days": 3}},
+                       {**entry, "early_access": {"active": "yes", "started_at": None, "full_release_at": None}},
+                       {**entry, "early_access": {"active": True, "started_at": "soon", "full_release_at": None}},
+                       {**entry, "early_access": {"active": True, "started_at": None}},
+                       {**entry, "early_access": {"active": False, "started_at": "2026-12-01T17:00:00Z",
+                                                  "full_release_at": "2026-11-01T17:00:00Z"}}):
             self.assertFalse(valid_document(facts_document({"123": broken}, "2026-11-19T02:00:00Z", "store")))
+        older = {key: value for key, value in entry.items() if key != "early_access"}
+        self.assertTrue(valid_document(facts_document({"123": older}, "2026-11-19T02:00:00Z", "store")))
 
 
 RELEASE = 1796403600  # 2026-12-04T17:00:00Z
@@ -131,6 +138,50 @@ class AdvanceAccessTests(unittest.TestCase):
         for value in (True, "soon", -5, 10 ** 12, RELEASE, RELEASE + 60):
             with self.subTest(value=value):
                 self.assertIsNone(advance_access(upcoming(), {"12": package(12, value)}))
+
+
+EA_START = 1789905600  # 2026-09-20T12:00:00Z
+FULL = 1820000000  # 2027-09-03T19:33:20Z
+
+
+class EarlyAccessTests(unittest.TestCase):
+    def test_a_game_in_early_access_and_its_planned_full_release(self):
+        self.assertEqual(early_access(store_item(release={"is_early_access": True, "steam_release_date": EA_START})),
+                         {"active": True, "started_at": "2026-09-20T12:00:00Z", "full_release_at": None})
+        planned = store_item(is_early_access=True, release={"steam_release_date": EA_START,
+                                                            "release_from_early_access_date": FULL})
+        self.assertEqual(early_access(planned),
+                         {"active": True, "started_at": "2026-09-20T12:00:00Z",
+                          "full_release_at": "2027-09-03T19:33:20Z"})
+        self.assertEqual(store_facts(123, planned)["early_access"]["full_release_at"], "2027-09-03T19:33:20Z")
+
+    def test_a_game_that_left_early_access(self):
+        left = store_item(release={"is_early_access": False, "steam_release_date": FULL,
+                                   "original_steam_release_date": EA_START,
+                                   "release_from_early_access_date": FULL})
+        self.assertEqual(early_access(left), {"active": False, "started_at": "2026-09-20T12:00:00Z",
+                                              "full_release_at": "2027-09-03T19:33:20Z"})
+        # Without the Early Access fields, the last record gives the start and
+        # the Steam date is the full release.
+        earlier = {"active": True, "started_at": "2026-09-20T12:00:00Z", "full_release_at": None}
+        self.assertEqual(early_access(store_item(release={"steam_release_date": FULL}), earlier),
+                         {"active": False, "started_at": "2026-09-20T12:00:00Z",
+                          "full_release_at": "2027-09-03T19:33:20Z"})
+
+    def test_games_never_in_early_access_and_bad_values(self):
+        self.assertIsNone(early_access(store_item()))
+        self.assertIsNone(store_facts(123, store_item())["early_access"])
+        # An earlier Steam date alone does not make a game Early Access.
+        self.assertIsNone(early_access(store_item(release={"steam_release_date": FULL,
+                                                           "original_steam_release_date": EA_START})))
+        for value in ("soon", -5, 10 ** 12, True, EA_START, EA_START - 60):
+            with self.subTest(value=value):
+                record = early_access(store_item(release={"is_early_access": True, "steam_release_date": EA_START,
+                                                          "release_from_early_access_date": value}))
+                self.assertIsNone(record["full_release_at"])
+        self.assertEqual(early_access(store_item(release={"is_early_access": True}),
+                                      {"active": True, "started_at": None, "full_release_at": None}),
+                         {"active": True, "started_at": None, "full_release_at": None})
 
 
 class StoreFactRefreshTests(MediaPublicationTests):
@@ -250,3 +301,22 @@ class AdvanceAccessRefreshTests(unittest.TestCase):
                                          lambda ids: self.fail("released games need no packages"))
         self.assertEqual(self.access()["starts_at"], "2026-12-01T17:00:00Z")
         self.assertEqual(result["facts_package_count"], 0)
+
+    def test_early_access_start_is_kept_after_the_full_release(self):
+        def in_early_access(appids, data_request):
+            return {"123": store_item(123, release={"is_early_access": True, "steam_release_date": EA_START}),
+                    "124": store_item(124)}
+
+        def released(appids, data_request):
+            return {"123": store_item(123, release={"steam_release_date": FULL}), "124": store_item(124)}
+        first = cli.refresh_store_facts(self.data, [123, 124], NOW, in_early_access, lambda ids: {})
+        self.assertEqual(first["facts_early_access_appids"], [123])
+        self.assertEqual(first["facts_full_release_appids"], [])
+        later = datetime(2027, 9, 4, tzinfo=timezone.utc)
+        result = cli.refresh_store_facts(self.data, [123, 124], later, released, lambda ids: {})
+        games = load_json(self.data / "store_facts.json")["games"]
+        self.assertEqual(games["123"]["early_access"], {"active": False, "started_at": "2026-09-20T12:00:00Z",
+                                                        "full_release_at": "2027-09-03T19:33:20Z"})
+        self.assertIsNone(games["124"]["early_access"])
+        self.assertEqual((result["facts_early_access_appids"], result["facts_full_release_appids"]), ([], [123]))
+        self.assertEqual(result["facts_changed_appids"], [123])
