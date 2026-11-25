@@ -121,6 +121,8 @@ jobs:
                   output.write(f"- 豪華版提前玩：{len(result.get('facts_advance_access_appids') or [])} 款；"
                                f"查了 {result.get('facts_package_count')} 個版本，"
                                f"版本讀不到 {len(result.get('facts_package_failed_appids') or [])} 款\n")
+                  output.write(f"- 搶先體驗中：{len(result.get('facts_early_access_appids') or [])} 款；"
+                               f"有正式上市時間：{len(result.get('facts_full_release_appids') or [])} 款\n")
                   output.write(f"- 主機遊戲的 Steam 版：{result.get('reference_count')} 款，發布：{result.get('references')}\n")
           PY
 

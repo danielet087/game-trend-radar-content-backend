@@ -146,7 +146,8 @@ def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=
             key = str(appid)
             item = (items or {}).get(key)
             try:
-                facts = (store_facts(appid, item, found if coming_soon(item) else None)
+                facts = (store_facts(appid, item, found if coming_soon(item) else None,
+                                     (old.get(key) or {}).get("early_access"))
                          if isinstance(item, dict) else None)
             except ValueError:
                 facts = None
@@ -172,6 +173,10 @@ def refresh_store_facts(data_dir: Path, appids: list[int], now: datetime, fetch=
             "facts_package_count": package_count, "facts_package_failed_appids": package_failed,
             "facts_advance_access_appids": sorted(int(key) for key, entry in games.items()
                                                   if entry.get("advance_access")),
+            "facts_early_access_appids": sorted(int(key) for key, entry in games.items()
+                                                if (entry.get("early_access") or {}).get("active")),
+            "facts_full_release_appids": sorted(int(key) for key, entry in games.items()
+                                                if (entry.get("early_access") or {}).get("full_release_at")),
             "facts_publish": publish, "facts_stop_reason": stop_reason}
 
 
